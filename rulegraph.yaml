@@ -1,0 +1,32 @@
+# RuleGraph configuration
+# Do NOT put secrets here. Use environment variables for all sensitive values.
+# See .env.example for required environment variables.
+
+app:
+  title: RuleGraph
+  version: "0.1.0"
+  description: AI-powered business rules knowledge graph
+
+ingest:
+  default_complexity_threshold: 0.5
+  retry:
+    llm_extraction:
+      max_retries: 1
+      backoff_seconds: 2
+    cognee_ingest:
+      max_retries: 1
+      backoff_seconds: 2
+    source_connector:
+      max_retries: 2
+      backoff_seconds: 5
+    document_parse:
+      max_retries: 0
+
+llm:
+  simple_model: claude-haiku-4-5
+  complex_model: claude-sonnet-4-5
+  complexity_threshold: 0.5
+
+pagination:
+  default_limit: 50
+  max_limit: 200

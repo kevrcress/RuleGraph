@@ -1,0 +1,1 @@
+"""RuleGraph application package."""
