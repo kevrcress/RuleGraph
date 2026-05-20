@@ -28,7 +28,7 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     ip = _client_ip(request)
-    allowed, _ = await check_rate_limit(f"register:{ip}", limit=5, window_seconds=3600)
+    allowed, _ = await check_rate_limit(f"register:{ip}", limit=50, window_seconds=3600)
     if not allowed:
         raise HTTPException(status_code=429, detail="Too many registration attempts. Try again later.")
 

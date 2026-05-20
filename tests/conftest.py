@@ -19,16 +19,10 @@ from app.config import settings
 # ---------------------------------------------------------------------------
 @pytest.fixture(scope="session", autouse=True)
 def _clear_rate_limits(request):
-    stage4_collected = any(
-        "verify_stage_4" in item.nodeid
-        for item in request.session.items
-    )
-    if not stage4_collected:
-        return
     try:
         import redis as _redis_sync
         r = _redis_sync.from_url("redis://localhost:6379", decode_responses=True)
-        for key in r.keys("rl:login:*"):
+        for key in r.keys("rl:*"):
             r.delete(key)
         r.close()
     except Exception:
