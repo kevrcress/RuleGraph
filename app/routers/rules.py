@@ -24,7 +24,7 @@ from app.schemas.rule import (
     LineageResponse,
     LineageEvent,
 )
-from app.services import rule_service, notification_service
+from app.services import rule_service, notification_service, impact_service
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,32 @@ async def update_rule(
         await db.commit()
 
     return RuleDetail.model_validate(rule)
+
+
+@router.get("/{rule_id}/impact")
+async def get_impact(
+    rule_id: uuid.UUID,
+    view: str = Query(default="technical"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    result = await db.execute(select(Rule).where(Rule.id == rule_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+    return await impact_service.get_impact(db, rule_id, view=view)
+
+
+@router.get("/{rule_id}/impact/reverse")
+async def get_reverse_impact(
+    rule_id: uuid.UUID,
+    view: str = Query(default="technical"),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    result = await db.execute(select(Rule).where(Rule.id == rule_id))
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+    return await impact_service.get_reverse_impact(db, rule_id, view=view)
 
 
 @router.get("/{rule_id}/lineage", response_model=LineageResponse)

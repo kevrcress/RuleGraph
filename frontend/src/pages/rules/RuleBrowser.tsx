@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { ThumbsUp, ThumbsDown } from "lucide-react";
 import { useRules } from "../../api/rules";
+import { useFeedback } from "../../api/feedback";
 import Layout from "../../components/Layout";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -12,6 +14,37 @@ const STATUS_COLORS: Record<string, string> = {
   deprecated: "text-bone-4",
   under_review: "text-purple-400",
 };
+
+function QuickFeedback({ ruleId }: { ruleId: string }) {
+  const feedback = useFeedback();
+  const [sent, setSent] = useState<string | null>(null);
+
+  const send = (e: React.MouseEvent, signal_type: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    feedback.mutate({ signal_type, rule_id: ruleId });
+    setSent(signal_type);
+  };
+
+  return (
+    <div className="flex items-center gap-1 ml-2">
+      <button
+        onClick={(e) => send(e, "thumbs_up")}
+        className={`p-1 rounded text-xs transition-colors ${sent === "thumbs_up" ? "text-green-400" : "text-bone-4 hover:text-green-400"}`}
+        title="Thumbs up"
+      >
+        <ThumbsUp size={11} />
+      </button>
+      <button
+        onClick={(e) => send(e, "thumbs_down")}
+        className={`p-1 rounded text-xs transition-colors ${sent === "thumbs_down" ? "text-ember" : "text-bone-4 hover:text-ember"}`}
+        title="Thumbs down"
+      >
+        <ThumbsDown size={11} />
+      </button>
+    </div>
+  );
+}
 
 export default function RuleBrowser() {
   const [search, setSearch] = useState("");
@@ -64,11 +97,14 @@ export default function RuleBrowser() {
                     <span className="text-xs text-bone-3 mt-0.5 block">{rule.source_type}</span>
                   )}
                 </div>
-                <span
-                  className={`text-xs font-medium ${STATUS_COLORS[rule.status] || "text-bone-3"}`}
-                >
-                  {rule.status}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-xs font-medium ${STATUS_COLORS[rule.status] || "text-bone-3"}`}
+                  >
+                    {rule.status}
+                  </span>
+                  <QuickFeedback ruleId={rule.id} />
+                </div>
               </div>
               <div className="mt-2 flex items-center gap-4 text-xs text-bone-3">
                 {rule.extraction_confidence != null && (

@@ -19,6 +19,7 @@ import IngestErrors from "./pages/admin/IngestErrors";
 import Settings from "./pages/admin/Settings";
 import UserSettings from "./pages/settings/UserSettings";
 import Chat from "./pages/chat/Chat";
+import WikiPromotion from "./pages/admin/WikiPromotion";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -123,6 +124,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={["tech_lead", "admin"]}>
                 <TechLeadDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/wiki-promotion"
+            element={
+              <ProtectedRoute roles={["tech_lead", "admin"]}>
+                <WikiPromotion />
               </ProtectedRoute>
             }
           />

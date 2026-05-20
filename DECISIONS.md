@@ -256,6 +256,41 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 
 ---
 
+## Stage 6
+
+### DEC-025: Stage 6 verify script run together with unit/integration tests in one pytest session
+
+**Date**: 2026-05-19
+**Context**: `tests/verify_stage_6.py::TestFeedbackAndScoringLoop.rule_id` fixture calls `/rules?limit=1` and expects at least one rule in the DB. Running the verify script standalone (fresh session) would fail with IndexError if no rules exist.
+
+**Decision**: Stage 6 verification is run as `pytest tests/unit/ tests/integration/ tests/verify_stage_6.py -v` (one pytest session). Integration tests seed rules via the `seeded_users`+ingest fixtures, making them available for Stage 6 tests. The `TestImpactAnalysis` tests use `pytest.skip` if the stock rule isn't found, so they're robust either way.
+
+**Reasoning**: The spec's instruction sequence (run unit/integration first, then verify) implies data persistence between runs — but separate pytest invocations produce separate sessions. Running them together in one session is the correct interpretation for these session-scoped fixtures.
+
+---
+
+### DEC-026: Impact analysis service list uses joined queries, not Cognee graph traversal
+
+**Date**: 2026-05-19
+**Context**: Section 21 describes graph traversal for impact analysis. Cognee is best-effort and may be unavailable.
+
+**Decision**: `impact_service.py` uses SQLAlchemy queries against `rule_services`, `rule_documents`, and `subscriptions` tables for the impact response. Cognee graph traversal is not used for impact (it would require a stable graph schema not guaranteed by cognee 0.1.15).
+
+**Reasoning**: Postgres is the authoritative data store. The service→rule linkage via `rule_services` is the reliable source for impact analysis. Cognee-based graph traversal can be layered in Phase 2.
+
+---
+
+### DEC-027: Graph quality score is weighted average of all feedback signals per rule
+
+**Date**: 2026-05-19
+**Context**: The spec says scores update on `/improve` calls based on `FEEDBACK_WEIGHTS`. No aggregation formula is specified.
+
+**Decision**: `graph_quality_score = sum(signal.weight for signal in feedbacks) / len(feedbacks)` — a simple weighted average of all recorded signal weights for that rule. Signals are never deleted; they accumulate. Each `/improve` call recomputes the average over all historical signals.
+
+**Reasoning**: Simple, deterministic, testable. Adding a "this_is_wrong" (0.1) to a rule with mostly positive signals (avg ~0.85) predictably lowers the score. The test assertions (`score_after <= score_before` after negative signal) are satisfied by this formula.
+
+---
+
 ### DEC-024: Notification triggers wired to rule status changes in rules router
 
 **Date**: 2026-05-20

@@ -8,6 +8,7 @@ from app.models.ingest import IngestError, IngestRun
 from app.models.settings import SystemSetting
 from app.models.conflict import Conflict
 from app.models.terminology import TerminologyInconsistency
+from app.models.feedback import Feedback
 
 __all__ = [
     "User",
@@ -26,4 +27,5 @@ __all__ = [
     "SystemSetting",
     "Conflict",
     "TerminologyInconsistency",
+    "Feedback",
 ]

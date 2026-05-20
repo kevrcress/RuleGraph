@@ -10,6 +10,7 @@ import app.models  # noqa: F401 — registers all ORM models with Base before cr
 from app.routers import ingest, rules, admin, auth, webhooks
 from app.routers import documents, conflicts, coverage, terminology, diff
 from app.routers import chat, subscriptions, notifications
+from app.routers import feedback, wiki
 from app.config import settings
 from app.graph.cognee_client import init_cognee, ingest_skills
 
@@ -51,3 +52,5 @@ app.include_router(diff.router)
 app.include_router(chat.router)
 app.include_router(subscriptions.router)
 app.include_router(notifications.router)
+app.include_router(feedback.router)
+app.include_router(wiki.router)
