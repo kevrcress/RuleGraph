@@ -3,19 +3,19 @@
 @tailwind utilities;
 
 :root {
-  --ink-0: #0e0d0c;
-  --ink-1: #161513;
-  --ink-2: #1e1c19;
-  --ink-3: #2a2820;
-  --ink-4: #3a3830;
-  --bone-0: #e8e0d0;
-  --bone-1: #c8c0b0;
-  --bone-2: #a8a090;
-  --bone-3: #787060;
-  --bone-4: #484038;
-  --brass-0: #c9a84c;
-  --brass-1: #8a6f32;
-  --brass-2: #5a4820;
+  --ink-0: #fafaf8;
+  --ink-1: #f0ede8;
+  --ink-2: #e4ddd3;
+  --ink-3: #d8d0c5;
+  --ink-4: #ccc4b8;
+  --bone-0: #1c1813;
+  --bone-1: #3a3530;
+  --bone-2: #5a554f;
+  --bone-3: #7a756e;
+  --bone-4: #b0aaa3;
+  --brass-0: #7a5f1a;
+  --brass-1: #5a4512;
+  --brass-2: #3a2d0c;
   --ember: #c0392b;
   --serif: "Newsreader", Georgia, serif;
   --sans: "IBM Plex Sans", system-ui, sans-serif;
