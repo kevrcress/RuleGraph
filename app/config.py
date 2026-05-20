@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # Security
     jwt_secret_key: str = Field(..., description="Secret key for JWT token signing")
     rulegraph_encryption_key: str = Field(..., description="Encryption key for PAT storage")
+    webhook_test_secret: str = Field(default="test-webhook-secret", description="Shared secret for HMAC webhook validation")
 
     # Application
     app_title: str = "RuleGraph"

@@ -6,7 +6,7 @@ import logging
 from fastapi import FastAPI
 
 import app.models  # noqa: F401 — registers all ORM models with Base before create_all
-from app.routers import ingest, rules, admin
+from app.routers import ingest, rules, admin, auth, webhooks
 from app.routers import documents, conflicts, coverage, terminology, diff
 from app.config import settings
 from app.graph.cognee_client import init_cognee
@@ -24,6 +24,11 @@ async def startup():
     await init_cognee()
 
 
+# Public endpoints (no JWT required)
+app.include_router(auth.router)
+app.include_router(webhooks.router)
+
+# Protected endpoints (JWT required per route dependency)
 app.include_router(ingest.router)
 app.include_router(rules.router)
 app.include_router(admin.router)

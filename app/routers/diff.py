@@ -8,6 +8,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import get_current_user
 from app.models.rule import Rule, RuleVersion
 from app.schemas.diff import DiffItem, PaginatedDiff, DiffDetail, DiffVersion
 
@@ -20,6 +21,7 @@ async def list_diff(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Return paginated summary of rules changed since the given date.
@@ -69,6 +71,7 @@ async def list_diff(
 async def get_rule_diff(
     rule_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Return before/after diff data for a single rule."""
     result = await db.execute(select(Rule).where(Rule.id == rule_id))

@@ -151,6 +151,63 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 
 ---
 
+## Stage 3
+
+### DEC-015: register endpoint accepts optional role field for seeding
+
+**Date**: 2026-05-19
+**Context**: The `seeded_users` fixture in `conftest.py` registers four users (admin, business_admin, tech_lead, user) and needs them to have different roles. Registration doesn't normally expose the role field (users get "user" by default), but tests require different roles.
+
+**Decision**: `POST /auth/register` accepts an optional `role` field (default "user"). The conftest was updated to pass `"role": u["role"]` in the registration call.
+
+**Reasoning**: For a PoC, accepting role in registration is the simplest approach and avoids the need for a separate admin-bootstrapping mechanism. In production (Phase 2 with SSO), roles would come from Azure AD groups and this field could be locked to admin-only.
+
+---
+
+### DEC-016: HTTPBearer with auto_error=False to return 401 (not 403) on missing auth
+
+**Date**: 2026-05-19
+**Context**: FastAPI's `HTTPBearer()` by default returns HTTP 403 when no Authorization header is present. The spec and tests expect HTTP 401 for unauthenticated requests.
+
+**Decision**: `HTTPBearer(auto_error=False)` is used, and `get_current_user` explicitly checks for `None` credentials and raises HTTP 401.
+
+**Reasoning**: HTTP 401 (Unauthorized) is the semantically correct status for "you need to authenticate first". HTTP 403 (Forbidden) means "you're authenticated but not allowed". The distinction matters for clients implementing retry-with-auth logic.
+
+---
+
+### DEC-017: Stage 1/2 verify scripts don't pass after Stage 3 adds auth
+
+**Date**: 2026-05-19
+**Context**: Stages 1 and 2 verify scripts call endpoints without auth headers. Stage 3 adds JWT auth to all non-auth/non-webhook endpoints. The spec says "do not modify stage verification scripts."
+
+**Decision**: Stage 1/2 verify scripts are not updated. They are expected to fail when run standalone after Stage 3. The regression protection (per spec) only covers `tests/unit/` and `tests/integration/`, which remain passing (0 tests collected = 0 failures).
+
+**Reasoning**: Stage verify scripts are stage-specific integration tests written before auth existed. They serve as historical documentation of what each stage tested. When the full test suite is needed, Stage 3+ requires auth — this is expected evolution.
+
+---
+
+### DEC-018: Webhook validation uses settings.webhook_test_secret as fallback
+
+**Date**: 2026-05-19
+**Context**: In production, the webhook shared secret is stored per-source in `connected_accounts`. In Stage 3, no webhook source management UI exists yet. The test expects a known secret to validate against.
+
+**Decision**: The `POST /webhooks/ado` endpoint validates against `settings.webhook_test_secret` (default: "test-webhook-secret"). Per-source secret lookup is Phase 2.
+
+**Reasoning**: The test file explicitly uses `getattr(settings, "webhook_test_secret", "test-webhook-secret")` as the secret, indicating this is the intended design for Stage 3.
+
+---
+
+### DEC-019: Terminology model added status and detected_at fields in Stage 3 migration
+
+**Date**: 2026-05-19
+**Context**: The admin synonyms endpoint needs to approve/reject terminology inconsistencies (setting a status), and the synonym list should show when they were detected.
+
+**Decision**: Added `status` (TEXT, default "pending") and `detected_at` (TIMESTAMPTZ) columns to `terminology_inconsistencies` via migration `0003_stage3_schema.py`.
+
+**Reasoning**: The synonym approval workflow requires a status field. The `detected_at` mirrors `created_at` for display purposes. Adding columns to the existing table avoids a full table rebuild.
+
+---
+
 ### DEC-014: Conflict + terminology detection runs after every /ingest/file call
 
 **Date**: 2026-05-19

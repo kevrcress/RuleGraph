@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import require_roles
 from app.ingest.pipeline import process_file
 from app.schemas.ingest import IngestFileResponse
 
@@ -27,6 +28,7 @@ async def ingest_file(
         description="Source label for service association (e.g. 'ordering', 'payments')",
     ),
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
 ):
     """
     Ingest a single file, extract business rules, and store them in the graph.
@@ -60,6 +62,7 @@ async def ingest_file(
 @router.post("")
 async def ingest_all_sources(
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
 ):
     """
     Full migration ingest — reads rulegraph.yaml and ingests all configured sources.
@@ -81,6 +84,7 @@ async def ingest_all_sources(
 @router.post("/migrate")
 async def ingest_migrate_only(
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
 ):
     """
     Migration-only ingest — runs migrate_only sources from rulegraph.yaml.

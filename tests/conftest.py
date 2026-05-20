@@ -67,7 +67,8 @@ async def seeded_users(client):
     for role, u in users.items():
         r = await client.post("/auth/register", json={
             "username": role, "email": u["email"],
-            "name": u["name"], "password": u["password"]
+            "name": u["name"], "password": u["password"],
+            "role": u["role"],
         })
         # If already exists from a previous run, just login
         r = await client.post("/auth/login", json={

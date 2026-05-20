@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.dependencies import get_current_user, require_roles
 from app.services import document_service
 from app.schemas.document import DocumentOut, PaginatedDocuments, DocumentPreviewResponse
 
@@ -17,6 +18,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 async def upload_document(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Upload a document. Validates file type via magic bytes.
@@ -38,6 +40,7 @@ async def upload_document(
 @router.post("/preview", response_model=DocumentPreviewResponse)
 async def preview_document(
     file: UploadFile = File(...),
+    current_user: dict = Depends(require_roles("business_admin", "admin")),
 ):
     """
     Sandbox preview — extract proposed rule changes without committing.
@@ -57,6 +60,7 @@ async def list_documents(
     page: int = 1,
     limit: int = 50,
     db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Return paginated document library."""
     items, total = await document_service.list_documents(db, page=page, limit=limit)

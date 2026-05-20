@@ -19,6 +19,10 @@ class TerminologyInconsistency(Base):
     canonical_term: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     variants: Mapped[List[str]] = mapped_column(ARRAY(Text()), nullable=False)
     services: Mapped[List[str]] = mapped_column(ARRAY(Text()), nullable=False)
+    status: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="pending")  # pending|approved|rejected
+    detected_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
