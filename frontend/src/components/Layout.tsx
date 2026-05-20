@@ -38,11 +38,19 @@ export default function Layout({ children }: Props) {
             {(isTL || isAdmin) && (
               <Link to="/admin/tech-lead-dashboard" className="text-sm text-bone-2 hover:text-bone-0">TL Dashboard</Link>
             )}
+            {(isTL || isAdmin) && (
+              <Link to="/graph" className="text-sm text-bone-2 hover:text-bone-0">Graph</Link>
+            )}
             {isAdmin && (
               <Link to="/admin/users" className="text-sm text-bone-2 hover:text-bone-0">Admin</Link>
             )}
           </div>
           <div className="flex items-center gap-4">
+            {/* Environment selector — Phase 1: stubbed to Prod only */}
+            <div className="flex items-center gap-1 text-xs text-bone-3 border border-bone-4 rounded px-2 py-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+              <span>Production</span>
+            </div>
             <ViewToggle />
             <NotificationBell />
             <span className="text-xs text-bone-3">{user?.name}</span>

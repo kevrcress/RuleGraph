@@ -32,6 +32,7 @@ class AdminUserUpdate(BaseModel):
     email: Optional[str] = None
     name: Optional[str] = None
     role: Optional[str] = None
+    password: Optional[str] = None
 
 
 class PaginatedUsers(BaseModel):

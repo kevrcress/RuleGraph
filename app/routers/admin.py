@@ -189,6 +189,8 @@ async def update_user(
         user.name = body.name
     if body.role is not None:
         user.role = body.role
+    if body.password is not None:
+        user.password_hash = _hash_pw(body.password)
 
     if body.role is not None and body.role != old_role:
         await write_audit(db, "user.role_changed", user_id=uuid.UUID(current_user["sub"]),
