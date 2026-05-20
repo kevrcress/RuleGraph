@@ -1,33 +1,94 @@
 # RuleGraph
 
-AI-powered business rules knowledge graph.
+An AI-powered knowledge graph that extracts business rules from source code and documents, connects them across service boundaries, and becomes the single source of truth for how your organization's software actually behaves — in plain English.
 
-## Overview
+---
 
-RuleGraph ingests source code and documents, extracts business rules using LLM analysis, stores them in a structured knowledge graph (Postgres + Cognee), and provides an API for querying and managing those rules.
+## What it does
 
-## Prerequisites
+Most organizations have business logic scattered across dozens of microservices with no central record of what the rules are, who owns them, or whether they're consistent. RuleGraph fixes that.
+
+**It ingests** your repos, wikis, PDFs, and Word docs. It uses an LLM to extract business rules in plain English from raw code. It stores those rules in a structured knowledge graph (Postgres + Cognee/LanceDB) and connects rules that span multiple services.
+
+**It detects** conflicts (same rule defined differently in two services), terminology inconsistencies (`buyerId` vs `customerId` — same concept, different names), coverage gaps (rules with no automated tests), and drift (the code diverged from the documented rule).
+
+**It surfaces** all of this through two lenses: a plain-English business view for BAs and product owners, and a technical view with file paths, confidence scores, and git attribution for engineers.
+
+**It learns** from feedback. Thumbs up/down, "This is wrong" flags, and "Mark as verified" signals feed into a quality score per rule that improves over time.
+
+---
+
+## Key features
+
+| Feature | Description |
+|---------|-------------|
+| **Rule extraction** | LLM reads source code, produces plain-English business rules with confidence scores |
+| **Cross-service graph** | Rules linked across services — one rule can span Ordering, Payments, and Billing |
+| **Conflict detection** | Flags when two services define the same concept differently |
+| **Terminology normalization** | Finds `buyerId`/`customerId`/`customer_id` — same thing, three names |
+| **Coverage tracking** | Tags every rule Covered / Partial / Uncovered / Stale |
+| **Three-mode compare view** | Defined (what the wiki says) vs Implemented (what the code does) vs Compare (where they diverge) |
+| **Impact analysis** | "If I change this rule, what services, tests, and rules are affected?" |
+| **QA wiki** | Every code change produces a plain-language diff; promoted to main wiki after TL review |
+| **Approval chain** | User proposes → Business Admin approves → Tech Lead flags code changes → rule goes active |
+| **Feedback loop** | Signals (thumbs up/down, verified, wrong) update graph quality scores via `/improve` |
+| **Chat** | Ask natural language questions about your rules: "What would break if we change the grace period?" |
+| **Subscriptions** | Subscribe to any rule or service; get notified in-app when it changes |
+
+---
+
+## Architecture
+
+```
+Browser (React 18 + Vite)
+       │
+       ▼
+FastAPI (Python) ─── JWT auth, role-based access
+       │
+       ├── PostgreSQL  ← canonical store for all rules, users, audit log
+       ├── Redis       ← sessions, rate limits, task queue (arq)
+       └── Cognee/LanceDB ← knowledge graph + vector search (best-effort enrichment)
+
+LLM routing:
+  complexity < 0.5  →  claude-haiku-4-5   (fast, cheap)
+  complexity ≥ 0.5  →  claude-sonnet-4-5  (thorough)
+```
+
+**Roles:** User · Business Admin · Technical Lead · Admin — each with a different view and different permissions in the approval chain.
+
+---
+
+## Running locally
+
+### Prerequisites
 
 - Python 3.11+
+- Node.js 18+
 - Docker + Docker Compose
-- An Anthropic API key
+- An [Anthropic API key](https://console.anthropic.com/)
 
-## Setup
-
-### 1. Clone and configure environment
+### 1. Clone and set up environment
 
 ```bash
-cp .env.example .env
+git clone <repo-url> && cd RuleGraph
 ```
 
-Edit `.env` and fill in all required values:
+Create a `.env` file:
 
+```bash
+# Generate these two secrets first:
+python3 -c "from cryptography.fernet import Fernet; print('RULEGRAPH_ENCRYPTION_KEY=' + Fernet.generate_key().decode())"
+python3 -c "import secrets; print('JWT_SECRET_KEY=' + secrets.token_hex(32))"
 ```
-RULEGRAPH_ENCRYPTION_KEY=<generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())">
+
+Then create `.env`:
+
+```env
+RULEGRAPH_ENCRYPTION_KEY=<paste from above>
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/rulegraph
 REDIS_URL=redis://localhost:6379
-ANTHROPIC_API_KEY=<your Anthropic API key>
-JWT_SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_hex(32))">
+ANTHROPIC_API_KEY=sk-ant-...
+JWT_SECRET_KEY=<paste from above>
 ```
 
 ### 2. Start infrastructure
@@ -36,7 +97,11 @@ JWT_SECRET_KEY=<generate with: python -c "import secrets; print(secrets.token_he
 docker compose up -d
 ```
 
-This starts Postgres (port 5432) and Redis (port 6379).
+This starts Postgres on port 5432 and Redis on port 6379. Wait a few seconds for Postgres to be ready, then create the test database:
+
+```bash
+docker compose exec postgres createdb -U postgres rulegraph_test
+```
 
 ### 3. Install Python dependencies
 
@@ -56,77 +121,216 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-The API will be available at http://localhost:8000.
+API available at **http://localhost:8000**  
+Interactive docs at **http://localhost:8000/docs**
 
-Interactive docs: http://localhost:8000/docs
-
-## Running Tests
-
-### Create the test database first
+### 6. Start the frontend
 
 ```bash
-# Connect to Postgres and create the test database
-docker exec -it rulegraph-postgres-1 psql -U postgres -c "CREATE DATABASE rulegraph_test;"
+cd frontend
+npm install
+npm run dev
 ```
 
-### Run unit and integration tests
+Frontend available at **http://localhost:5173**
+
+### 7. Create demo users (optional but useful)
 
 ```bash
-pytest tests/unit/ tests/integration/ -v
+python seeds/demo_users.py
 ```
 
-### Run Stage 1 verification
+Creates one user per role: `admin@test.com`, `ba@test.com`, `tl@test.com`, `user@test.com` — all with password `Test1234!`.
+
+### 8. Ingest some data
 
 ```bash
-pytest tests/verify_stage_1.py -v
-```
-
-## API Endpoints (Stage 1)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/ingest/file` | Ingest a file and extract business rules |
-| GET | `/rules` | Paginated list of rules |
-| GET | `/rules/{id}` | Single rule detail |
-| GET | `/admin/ingest-errors` | List ingest errors |
-
-### Example: Ingest a file
-
-```bash
+# Ingest the included seed file (eShopOnContainers Order.cs)
 curl -X POST http://localhost:8000/ingest/file \
+  -H "Authorization: Bearer <your-token>" \
   -F "file=@seeds/Order.cs"
 ```
 
-### Example: List rules
+Or ingest a whole repo via the config in `rulegraph.yaml`.
+
+---
+
+## Running tests
 
 ```bash
-curl http://localhost:8000/rules?page=1&limit=10
+# Unit + integration tests (no server needed — uses ASGI test client)
+pytest tests/unit/ tests/integration/ -v
+
+# Stage verification (run together so integration data is available)
+pytest tests/unit/ tests/integration/ tests/verify_stage_6.py -v
 ```
 
-## Project Structure
+The test suite uses a separate `rulegraph_test` database. All 150 tests run without a live server, Anthropic key, or Cognee — the LLM and graph calls are mocked where needed.
+
+---
+
+## API overview
+
+All endpoints except `/auth/*` and `/webhooks/*` require a `Authorization: Bearer <token>` header.
+
+**Auth**
+```
+POST /auth/register   — create account
+POST /auth/login      — returns JWT access token
+```
+
+**Rules**
+```
+GET  /rules               — paginated list
+GET  /rules/{id}          — single rule with compare view data
+POST /rules               — propose a new rule
+PUT  /rules/{id}          — update (triggers authoring assists)
+GET  /rules/{id}/lineage  — full version history
+GET  /rules/{id}/impact         — what does this rule affect?
+GET  /rules/{id}/impact/reverse — what affects this rule?
+```
+
+**Ingest**
+```
+POST /ingest/file     — ingest a single file (Admin)
+POST /ingest          — full migration ingest from rulegraph.yaml (Admin)
+POST /ingest/migrate  — migrate-only sources (Admin)
+```
+
+**Search & reports**
+```
+GET /search           — full-text search across rules
+GET /conflicts        — cross-service rule conflicts
+GET /coverage         — rule coverage status report
+GET /terminology      — terminology inconsistency report
+GET /diff             — paginated list of changed rules
+GET /diff/{rule_id}   — before/after diff for a specific rule
+```
+
+**Documents**
+```
+POST /documents         — upload a document (PDF, DOCX, TXT, MD, EML)
+POST /documents/preview — sandbox preview without committing (BA, Admin)
+GET  /documents         — browse document library
+```
+
+**Feedback & quality**
+```
+POST /feedback    — record a signal (thumbs_up, thumbs_down, this_is_wrong, mark_as_verified, ...)
+POST /improve     — recompute graph_quality_score from all signals (Admin)
+POST /lint        — re-ingest Cognee skills to enrich graph (Admin)
+```
+
+**Wiki**
+```
+POST /wiki/promote  — promote QA changes to main wiki (TL, Admin)
+```
+
+**Chat**
+```
+POST /chat          — ask a natural language question
+GET  /chat/history  — session history
+```
+
+**Subscriptions & notifications**
+```
+GET    /subscriptions       — my subscriptions
+POST   /subscriptions       — subscribe to a rule/service/conflict
+DELETE /subscriptions/{id}  — unsubscribe
+GET    /notifications       — my notification feed
+PUT    /notifications/{id}/read
+```
+
+**Admin**
+```
+GET /admin/review-queue               — rules pending BA approval
+PUT /admin/review-queue/{id}/approve
+PUT /admin/review-queue/{id}/reject
+GET /admin/tech-lead-dashboard        — approved rules needing TL action
+PUT /admin/tech-lead-dashboard/{id}/code-change
+PUT /admin/tech-lead-dashboard/{id}/no-code
+GET /admin/audit-log
+GET /admin/users / POST / PUT
+GET /admin/ingest-errors
+GET /admin/settings / PUT
+GET /admin/synonyms / approve / reject
+```
+
+---
+
+## Project structure
 
 ```
 app/
-├── config.py          # Pydantic settings, validates env vars at startup
+├── main.py            # FastAPI app — middleware, router registration
+├── config.py          # Pydantic settings — validates all env vars at startup
 ├── database.py        # Async SQLAlchemy engine + session factory
-├── main.py            # FastAPI app entry point
-├── dependencies.py    # Shared FastAPI dependencies
-├── models/            # SQLAlchemy ORM models
-├── schemas/           # Pydantic response schemas
-├── routers/           # FastAPI route handlers
-├── services/          # Business logic services
-├── graph/             # Cognee knowledge graph client (isolated here)
-└── ingest/            # File ingestion pipeline
-    ├── complexity.py  # Complexity scorer (0.0-1.0)
-    ├── extractor.py   # LLM-based rule extractor
-    └── pipeline.py    # Per-file processing orchestration
+├── dependencies.py    # JWT auth + role guards as FastAPI dependencies
+├── models/            # SQLAlchemy ORM models (Rule, Service, User, Feedback, ...)
+├── schemas/           # Pydantic request/response schemas
+├── routers/           # Thin route handlers — logic lives in services/
+├── services/          # Business logic
+│   ├── impact_service.py    # Upstream/downstream dependency traversal
+│   ├── feedback_service.py  # FEEDBACK_WEIGHTS, signal recording, score aggregation
+│   ├── rule_service.py      # Rule lifecycle state machine + authoring assists
+│   ├── chat_service.py      # Cognee recall + session memory
+│   ├── conflict_service.py
+│   ├── coverage_service.py
+│   └── ...
+├── graph/
+│   └── cognee_client.py  # ALL Cognee calls isolated here — nothing else touches Cognee
+└── ingest/
+    ├── pipeline.py       # Per-file orchestration
+    ├── complexity.py     # Complexity scorer (0.0–1.0 → routes to haiku vs sonnet)
+    ├── extractor.py      # LLM rule extraction with prompt injection framing
+    ├── coverage_mapper.py
+    ├── terminology_scanner.py
+    └── connectors/       # ADO, GitHub, Confluence, Notion
+
+frontend/src/
+├── pages/
+│   ├── rules/         # RuleBrowser, RuleDetail (with impact panel + feedback)
+│   ├── reports/       # Conflicts, Coverage, Terminology, Diff
+│   ├── admin/         # ReviewQueue, TechLeadDashboard, WikiPromotion, ...
+│   └── chat/
+├── components/
+│   ├── CompareView/   # Three-mode compare (Defined / Implemented / Compare)
+│   └── RuleDiff/      # Split-panel before/after diff, reused in 3 places
+├── api/               # TanStack Query hooks + fetch wrappers
+└── store/             # Zustand: auth, view toggle, notifications
+
+my_skills/             # Cognee skill files — re-ingested on /improve
+seeds/                 # Demo data: Order.cs, demo users, eShop seed script
+tests/
+├── unit/              # Per-module unit tests
+├── integration/       # Multi-component integration tests
+└── verify_stage_N.py  # End-to-end stage verification (do not modify)
 ```
 
-## Key Design Decisions
+---
 
-See `DECISIONS.md` for detailed rationale on non-obvious implementation choices.
+## Feedback weights
 
-## Configuration
+All signal weights live in `feedback_service.FEEDBACK_WEIGHTS` — never hardcoded elsewhere:
 
-See `rulegraph.yaml` for application configuration (no secrets).
-See `.env.example` for required environment variables.
+| Signal | Weight | Type |
+|--------|--------|------|
+| `mark_as_verified` | 1.0 | Explicit |
+| `thumbs_up` | 0.9 | Explicit |
+| `drift_caught_and_resolved` | 0.9 | Automated |
+| `edited_rule_after_view` | 0.8 | Implicit |
+| `conflict_resolved` | 0.8 | Implicit |
+| `coverage_gap_fixed` | 0.8 | Implicit |
+| `clicked_source_doc` | 0.7 | Implicit |
+| `clicked_through` | 0.6 | Implicit |
+| `thumbs_down` | 0.2 | Explicit |
+| `searched_again_immediately` | 0.2 | Implicit |
+| `this_is_wrong` | 0.1 | Explicit |
+
+`graph_quality_score` is the weighted average of all recorded signals for a rule, recomputed on every `POST /improve` call.
+
+---
+
+## Design decisions
+
+See [`DECISIONS.md`](DECISIONS.md) for the reasoning behind non-obvious choices (why Cognee failures are non-fatal, why scoring uses a weighted average, how the test suite handles session-scoped data, etc.).
