@@ -122,3 +122,20 @@ export const useTerminology = (page = 1) =>
       return res.data;
     },
   });
+
+export const useClearData = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (preview: boolean) => {
+      const res = await apiClient.delete(
+        `/admin/data${preview ? "" : "?confirm=true"}`
+      );
+      return res.data;
+    },
+    onSuccess: (_data, preview) => {
+      if (!preview) {
+        qc.invalidateQueries();
+      }
+    },
+  });
+};

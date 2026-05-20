@@ -448,3 +448,88 @@ async def reject_synonym(
                       target_type="terminology", target_id=synonym_id)
     await db.commit()
     return {"status": "rejected"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Data reset
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.delete("/data")
+async def clear_all_data(
+    confirm: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """
+    Delete all ingested graph data: rules, services, conflicts, terminology,
+    feedback, documents, ingest runs, and ingest errors.
+
+    Preserves: users, connected accounts, audit log, system settings.
+
+    Requires ?confirm=true to execute. Without it, returns a preview of
+    what would be deleted.
+    """
+    from sqlalchemy import text
+    from app.models.rule import Rule, RuleVersion, Service, RuleService
+    from app.models.document import Document, RuleDocument
+    from app.models.conflict import Conflict
+    from app.models.terminology import TerminologyInconsistency
+    from app.models.feedback import Feedback
+    from app.models.ingest import IngestRun, IngestError
+    from app.models.notification import Notification, Subscription
+
+    async def _count(model) -> int:
+        result = await db.execute(select(func.count()).select_from(model))
+        return result.scalar_one()
+
+    counts = {
+        "rules": await _count(Rule),
+        "rule_versions": await _count(RuleVersion),
+        "services": await _count(Service),
+        "conflicts": await _count(Conflict),
+        "terminology_inconsistencies": await _count(TerminologyInconsistency),
+        "feedback": await _count(Feedback),
+        "documents": await _count(Document),
+        "ingest_runs": await _count(IngestRun),
+        "ingest_errors": await _count(IngestError),
+        "notifications": await _count(Notification),
+        "subscriptions": await _count(Subscription),
+    }
+    total = sum(counts.values())
+
+    if not confirm:
+        return {
+            "status": "preview",
+            "message": "Add ?confirm=true to actually delete. Users, audit log, and settings are preserved.",
+            "would_delete": counts,
+            "total_rows": total,
+        }
+
+    # Delete in dependency order (children before parents)
+    await db.execute(text("DELETE FROM feedback"))
+    await db.execute(text("DELETE FROM rule_documents"))
+    await db.execute(text("DELETE FROM rule_services"))
+    await db.execute(text("DELETE FROM rule_versions"))
+    await db.execute(text("DELETE FROM subscriptions"))
+    await db.execute(text("DELETE FROM notifications"))
+    await db.execute(text("DELETE FROM rules"))
+    await db.execute(text("DELETE FROM services"))
+    await db.execute(text("DELETE FROM documents"))
+    await db.execute(text("DELETE FROM conflicts"))
+    await db.execute(text("DELETE FROM terminology_inconsistencies"))
+    await db.execute(text("DELETE FROM ingest_errors"))
+    await db.execute(text("DELETE FROM ingest_runs"))
+
+    await write_audit(
+        db, "admin.data_cleared",
+        user_id=uuid.UUID(current_user["sub"]),
+        detail={"deleted": counts},
+    )
+    await db.commit()
+
+    return {
+        "status": "cleared",
+        "message": "All graph data deleted. Users, audit log, and settings preserved.",
+        "deleted": counts,
+        "total_rows": total,
+    }
