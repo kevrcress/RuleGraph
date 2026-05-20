@@ -79,3 +79,26 @@ async def seeded_users(client):
 
 def auth(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _auto_seed_stage2(request, client):
+    """
+    Seed eShop multi-source data when verify_stage_2.py tests are collected.
+    Runs once per test session, before any Stage 2 tests execute.
+    No-op when running Stage 1 tests only.
+    """
+    stage2_collected = any(
+        "verify_stage_2" in item.nodeid
+        for item in request.session.items
+    )
+    if not stage2_collected:
+        return
+
+    try:
+        from seeds.eshop_seed import seed_test_data
+        await seed_test_data(client)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Stage 2 seed failed (tests may fail): {e}"
+        )

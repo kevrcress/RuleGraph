@@ -66,6 +66,7 @@ class Rule(Base):
     cognee_node_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     workitem_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     workitem_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    coverage_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="uncovered")
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

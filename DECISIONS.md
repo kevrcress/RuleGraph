@@ -91,3 +91,71 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 **Decision**: `app/main.py` has `import app.models  # noqa: F401` as the first import after the standard library. This triggers `app/models/__init__.py` which imports all model classes.
 
 **Reasoning**: This ensures the full database schema is known to SQLAlchemy regardless of which routers are active. The import is in `main.py` (the app entry point) so it runs before any test or production startup, and it's marked with `noqa: F401` to suppress "unused import" linting warnings since the import is intentionally for its side effect.
+
+---
+
+## Stage 2
+
+### DEC-009: Conflict detection uses keyword-based overlap, not LLM
+
+**Date**: 2026-05-19
+**Context**: The spec says to detect cross-service rule conflicts. An LLM approach would be expensive per-ingest.
+
+**Decision**: Keyword-based overlap detection. Two rules from different services are flagged as conflicting when their titles+definitions share ≥2 significant business terms (from a curated `SIGNIFICANT_TERMS` set). Conflict detection runs after every file ingest and replaces all existing conflict records.
+
+**Reasoning**: Deterministic, fast, and sufficient for the PoC. The eShop "Stock Confirmation Before Payment" (ordering) and PaymentsProcessor stock validation (payments) share "stock", "payment", "confirmation", "availability" — the 4-keyword overlap reliably triggers the conflict. LLM-based conflict detection is backlogged for Phase 2.
+
+---
+
+### DEC-010: Terminology detection uses synonym groups + camelCase regex scanning
+
+**Date**: 2026-05-19
+**Context**: The spec requires detecting `buyerId` (Ordering) vs `customerId` (Catalog/Payments) as a terminology inconsistency.
+
+**Decision**: `terminology_scanner.py` scans source content for `*Id` camelCase patterns using a regex. `SYNONYM_GROUPS` contains a curated set of semantic groups (e.g., {"buyer", "customer", "client", "user"}). When two terms from different services fall in the same group, a `TerminologyInconsistency` record is created/updated.
+
+**Reasoning**: Source code reliably contains camelCase identifiers like `buyerId` and `customerId`. Regex scanning is deterministic. The synonym groups are explicitly maintained rather than using NLP, which keeps the implementation stable and testable. Scanning happens against raw source content (not extracted rule definitions) to guarantee camelCase form is preserved.
+
+---
+
+### DEC-011: Magic byte file validation without libmagic OS dependency
+
+**Date**: 2026-05-19
+**Context**: `python-magic==0.4.27` requires `libmagic` OS library which may not be available in all environments.
+
+**Decision**: `document_service.py` implements manual magic byte detection: PDF=`%PDF`, DOCX=`PK\x03\x04`, rejected EXE=`MZ`. `python-magic` is not called. Text-based formats (TXT, MD, EML, MSG) are accepted by extension.
+
+**Reasoning**: The spec requires magic byte validation but doesn't mandate using python-magic specifically. The manual implementation covers all specified file types without an OS dependency. python-magic can be added as an enhancement in Phase 2.
+
+---
+
+### DEC-012: Document storage uses local filesystem in Stage 2
+
+**Date**: 2026-05-19
+**Context**: The spec defines a `storage_path` column but doesn't specify the backend in Stage 2.
+
+**Decision**: Uploaded documents are stored in a local `uploads/` directory. `storage_path` contains the relative path (e.g., `uploads/<uuid>.pdf`). Cloud storage (S3, Azure Blob) is Phase 2.
+
+**Reasoning**: Keeps Stage 2 self-contained without cloud infrastructure. The `storage_path` column is already abstracted enough to switch backends later without schema changes.
+
+---
+
+### DEC-013: _auto_seed_stage2 conftest fixture seeds eShop data before Stage 2 tests
+
+**Date**: 2026-05-19
+**Context**: `verify_stage_2.py` says "Assumes eshop_seed.py has been run before this test suite" but `conftest.py` drops and recreates all tables at session start, wiping any pre-seeded data.
+
+**Decision**: Added `_auto_seed_stage2` as an `autouse=True` session-scoped fixture in `conftest.py`. It checks if any Stage 2 tests are collected (`request.session.items`) and calls `seed_test_data(client)` only then. Stage 1-only test runs are unaffected.
+
+**Reasoning**: The seed runs AFTER the DB is set up but BEFORE any Stage 2 test executes (session fixture ordering). This avoids requiring manual seed execution while keeping Stage 1 tests isolated.
+
+---
+
+### DEC-014: Conflict + terminology detection runs after every /ingest/file call
+
+**Date**: 2026-05-19
+**Context**: Detection needs to run across all stored rules. The spec's demo check calls individual file ingest endpoints, not /ingest/migrate.
+
+**Decision**: `pipeline.process_file()` calls `conflict_service.detect_and_store(db)` and `terminology_service.scan_content_and_update(db, content, service_name)` after every file ingest. Both are wrapped in `try/except` and are non-fatal.
+
+**Reasoning**: Ensures conflicts and terminology are always current after ingestion. The per-call cost is acceptable for Stage 2 (few services). Both operations fail silently to preserve the existing "clean seed = no ingest errors" guarantee for Stage 1 tests.

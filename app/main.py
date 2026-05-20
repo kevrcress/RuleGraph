@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 import app.models  # noqa: F401 — registers all ORM models with Base before create_all
 from app.routers import ingest, rules, admin
+from app.routers import documents, conflicts, coverage, terminology, diff
 from app.config import settings
 from app.graph.cognee_client import init_cognee
 
@@ -26,3 +27,8 @@ async def startup():
 app.include_router(ingest.router)
 app.include_router(rules.router)
 app.include_router(admin.router)
+app.include_router(documents.router)
+app.include_router(conflicts.router)
+app.include_router(coverage.router)
+app.include_router(terminology.router)
+app.include_router(diff.router)

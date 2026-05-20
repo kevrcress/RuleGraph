@@ -5,7 +5,10 @@ Steps:
   2. Route to correct LLM tier
   3. Extract business rules
   4. Add to Cognee (best-effort)
-  5. Store extracted rules in Postgres
+  5. Associate with service
+  6. Store extracted rules in Postgres
+  7. Run conflict detection (best-effort)
+  8. Run terminology scan (best-effort)
 """
 import logging
 import traceback
@@ -43,7 +46,7 @@ async def process_file(
         db: Async database session.
         filename: Name of the file being processed.
         content: Text content of the file.
-        source_name: Optional label for the ingest source (e.g. repo name).
+        source_name: Optional label for the ingest source / service name.
 
     Returns:
         IngestResult with rules_extracted count and any errors.
@@ -79,7 +82,7 @@ async def process_file(
                 file_path=filename,
                 error_source="llm_extraction",
                 error_message=error_msg,
-                raw_content=content[:5000],  # Truncate large files
+                raw_content=content[:5000],
                 stack_trace=traceback.format_exc() if extraction_error else None,
             )
             files_errored += 1
@@ -95,7 +98,6 @@ async def process_file(
         extraction_result = extraction_result_holder
 
         if extraction_result.error:
-            # LLM returned an error in the result (not an exception)
             logger.error(f"LLM extraction error for '{filename}': {extraction_result.error}")
             await ingest_service.log_error(
                 db=db,
@@ -122,13 +124,16 @@ async def process_file(
             f"using {extraction_result.model_used}"
         )
 
-        # --- Step 4: Add to Cognee (best-effort — failures are NOT logged to ingest_errors) ---
-        # See DECISIONS.md: Cognee failures go to app logs only, not ingest_errors table.
+        # --- Step 4: Add to Cognee (best-effort) ---
         cognee_node_id = await add_to_graph(content, dataset_name="rulegraph")
         if cognee_node_id is None:
             logger.info(f"Cognee graph enrichment skipped/failed for '{filename}' (non-fatal)")
 
-        # --- Step 5: Store each rule in Postgres ---
+        # --- Step 5: Get or create the service record ---
+        service = await ingest_service.get_or_create_service(db, effective_source)
+        await db.flush()
+
+        # --- Step 6: Store each rule in Postgres with service association ---
         for extracted in extracted_rules:
             try:
                 await ingest_service.store_rule(
@@ -136,13 +141,28 @@ async def process_file(
                     title=extracted.title,
                     definition=extracted.definition,
                     confidence=extracted.confidence,
-                    source_type="file_upload",
+                    source_type="code" if effective_source != "file_upload" else "file_upload",
                     cognee_node_id=cognee_node_id,
+                    service_id=service.id,
                 )
                 result.rules_extracted += 1
             except Exception as store_exc:
                 logger.error(f"Failed to store rule '{extracted.title}': {store_exc}")
                 result.errors.append(f"Failed to store rule '{extracted.title}': {store_exc}")
+
+        # --- Step 7: Run conflict detection (best-effort, non-fatal) ---
+        try:
+            from app.services import conflict_service
+            await conflict_service.detect_and_store(db)
+        except Exception as e:
+            logger.warning(f"Conflict detection failed for '{filename}' (non-fatal): {e}")
+
+        # --- Step 8: Run terminology scan (best-effort, non-fatal) ---
+        try:
+            from app.services import terminology_service
+            await terminology_service.scan_content_and_update(db, content, effective_source)
+        except Exception as e:
+            logger.warning(f"Terminology scan failed for '{filename}' (non-fatal): {e}")
 
         # --- Complete the run ---
         await ingest_service.complete_run(

@@ -1,19 +1,18 @@
 """
-Ingest service — retry logic, error logging, and run tracking.
-Manages IngestRun and IngestError records in Postgres.
+Ingest service — retry logic, error logging, run tracking, service management.
+Manages IngestRun, IngestError, Service, and RuleService records in Postgres.
 """
 import asyncio
 import logging
-import traceback
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum
-from app.models.rule import Rule, RuleStatusEnum
+from app.models.rule import Rule, RuleStatusEnum, Service, RuleService
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +90,21 @@ async def log_error(
     await db.flush()
 
 
+async def get_or_create_service(db: AsyncSession, service_name: str) -> Service:
+    """Get an existing Service by name or create a new one."""
+    result = await db.execute(select(Service).where(Service.name == service_name))
+    service = result.scalar_one_or_none()
+    if service is None:
+        service = Service(
+            id=uuid.uuid4(),
+            name=service_name,
+            source_name=service_name,
+        )
+        db.add(service)
+        await db.flush()
+    return service
+
+
 async def store_rule(
     db: AsyncSession,
     title: str,
@@ -98,8 +112,9 @@ async def store_rule(
     confidence: float,
     source_type: str,
     cognee_node_id: Optional[str] = None,
+    service_id: Optional[uuid.UUID] = None,
 ) -> Rule:
-    """Write an extracted rule to the rules table."""
+    """Write an extracted rule to the rules table and optionally associate with a service."""
     rule = Rule(
         id=uuid.uuid4(),
         title=title,
@@ -108,9 +123,16 @@ async def store_rule(
         extraction_confidence=confidence,
         source_type=source_type,
         cognee_node_id=cognee_node_id,
+        coverage_status="uncovered",
     )
     db.add(rule)
     await db.flush()
+
+    if service_id is not None:
+        rule_service = RuleService(rule_id=rule.id, service_id=service_id)
+        db.add(rule_service)
+        await db.flush()
+
     return rule
 
 

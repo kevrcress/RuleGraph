@@ -6,6 +6,8 @@ from app.models.notification import Subscription, Notification
 from app.models.audit import AuditLog
 from app.models.ingest import IngestError, IngestRun
 from app.models.settings import SystemSetting
+from app.models.conflict import Conflict
+from app.models.terminology import TerminologyInconsistency
 
 __all__ = [
     "User",
@@ -22,4 +24,6 @@ __all__ = [
     "IngestError",
     "IngestRun",
     "SystemSetting",
+    "Conflict",
+    "TerminologyInconsistency",
 ]
