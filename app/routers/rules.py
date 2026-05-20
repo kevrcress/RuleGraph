@@ -24,7 +24,7 @@ from app.schemas.rule import (
     LineageResponse,
     LineageEvent,
 )
-from app.services import rule_service
+from app.services import rule_service, notification_service
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,17 @@ async def update_rule(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+    # Fire notifications if status changed
+    if body.status is not None:
+        await notification_service.notify_rule_status_change(
+            db=db,
+            rule_id=rule_id,
+            new_status=body.status.value if hasattr(body.status, "value") else str(body.status),
+            actor_id=updater_id,
+        )
+        await db.commit()
+
     return RuleDetail.model_validate(rule)
 
 

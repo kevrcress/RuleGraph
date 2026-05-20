@@ -18,6 +18,7 @@ import Users from "./pages/admin/Users";
 import IngestErrors from "./pages/admin/IngestErrors";
 import Settings from "./pages/admin/Settings";
 import UserSettings from "./pages/settings/UserSettings";
+import Chat from "./pages/chat/Chat";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -156,6 +157,16 @@ export default function App() {
             element={
               <ProtectedRoute roles={["admin"]}>
                 <Settings />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Chat */}
+          <Route
+            path="/chat"
+            element={
+              <ProtectedRoute>
+                <Chat />
               </ProtectedRoute>
             }
           />

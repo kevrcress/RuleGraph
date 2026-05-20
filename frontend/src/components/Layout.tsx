@@ -29,6 +29,7 @@ export default function Layout({ children }: Props) {
               RuleGraph
             </Link>
             <Link to="/rules" className="text-sm text-bone-2 hover:text-bone-0">Rules</Link>
+            <Link to="/chat" className="text-sm text-bone-2 hover:text-bone-0">Chat</Link>
             <Link to="/documents" className="text-sm text-bone-2 hover:text-bone-0">Documents</Link>
             <Link to="/diff" className="text-sm text-bone-2 hover:text-bone-0">Diff</Link>
             {(isBA || isAdmin) && (

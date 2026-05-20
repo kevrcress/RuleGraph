@@ -9,8 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 import app.models  # noqa: F401 — registers all ORM models with Base before create_all
 from app.routers import ingest, rules, admin, auth, webhooks
 from app.routers import documents, conflicts, coverage, terminology, diff
+from app.routers import chat, subscriptions, notifications
 from app.config import settings
-from app.graph.cognee_client import init_cognee
+from app.graph.cognee_client import init_cognee, ingest_skills
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +32,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     await init_cognee()
+    await ingest_skills()
 
 
 # Public endpoints (no JWT required)
@@ -46,3 +48,6 @@ app.include_router(conflicts.router)
 app.include_router(coverage.router)
 app.include_router(terminology.router)
 app.include_router(diff.router)
+app.include_router(chat.router)
+app.include_router(subscriptions.router)
+app.include_router(notifications.router)

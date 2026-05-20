@@ -4,8 +4,11 @@ CRITICAL: ALL Cognee calls must go through this module only.
 No other file in the application may import or call cognee directly.
 """
 import logging
+import pathlib
 
 logger = logging.getLogger(__name__)
+
+_SKILLS_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "my_skills"
 
 _cognee_available = False
 
@@ -65,6 +68,23 @@ async def search_graph(query: str) -> list:
     except Exception as e:
         logger.warning(f"Cognee search_graph failed: {e}")
         return []
+
+
+async def ingest_skills() -> None:
+    """Ingest all skill files from my_skills/ into Cognee at startup."""
+    if not _cognee_available:
+        logger.info("Cognee not available — skipping skill ingestion")
+        return
+    if not _SKILLS_DIR.exists():
+        logger.warning("my_skills/ directory not found — skipping skill ingestion")
+        return
+    for skill_file in _SKILLS_DIR.glob("*.md"):
+        try:
+            content = skill_file.read_text(encoding="utf-8")
+            await cognee.add(content, "rulegraph_skills")
+            logger.info("Ingested skill: %s", skill_file.name)
+        except Exception as exc:
+            logger.warning("Failed to ingest skill %s (non-fatal): %s", skill_file.name, exc)
 
 
 async def recall_from_graph(query: str) -> list:

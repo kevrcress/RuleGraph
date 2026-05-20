@@ -158,3 +158,42 @@ async def _auto_seed_stage2(request, client):
         logging.getLogger(__name__).warning(
             f"Stage 2 seed failed (tests may fail): {e}"
         )
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _auto_seed_stage5(request, client, seeded_users):
+    """
+    Seed Order.cs when verify_stage_5.py tests are collected so that
+    chat sources are available. No-op in other test sessions.
+    """
+    stage5_collected = any(
+        "verify_stage_5" in item.nodeid
+        for item in request.session.items
+    )
+    # If Stage 1 or 2 tests are also collected they seed the same data; skip duplicate.
+    stage1_or_2_collected = any(
+        ("verify_stage_1" in item.nodeid or "verify_stage_2" in item.nodeid)
+        for item in request.session.items
+    )
+    if not stage5_collected or stage1_or_2_collected:
+        return
+
+    try:
+        import logging
+        log = logging.getLogger(__name__)
+        admin_token = seeded_users["admin"]
+        with open("seeds/Order.cs", "rb") as f:
+            r = await client.post(
+                "/ingest/file",
+                files={"file": ("Order.cs", f, "text/plain")},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+        if r.status_code == 200:
+            log.info("Stage 5 seed: Order.cs ingested for chat source tests")
+        else:
+            log.warning("Stage 5 seed: Order.cs ingest returned %s — %s", r.status_code, r.text)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Stage 5 seed failed (chat source tests may fail): {e}"
+        )

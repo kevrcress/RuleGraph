@@ -1,9 +1,25 @@
+import { useEffect } from "react";
 import { Bell } from "lucide-react";
 import { useNotificationStore } from "../../store/notificationStore";
+import { useNotifications, useMarkNotificationRead } from "../../api/chat";
 
 export default function NotificationBell() {
-  const { unreadCount, feedOpen, toggleFeed, notifications, closeFeed } =
+  const { unreadCount, feedOpen, toggleFeed, notifications, closeFeed, setNotifications, markRead: markLocalRead } =
     useNotificationStore();
+
+  const { data } = useNotifications(1, 50);
+  const markReadMutation = useMarkNotificationRead();
+
+  useEffect(() => {
+    if (data?.items) {
+      setNotifications(data.items);
+    }
+  }, [data]);
+
+  const handleMarkRead = async (id: string) => {
+    markLocalRead(id);
+    await markReadMutation.mutateAsync(id);
+  };
 
   return (
     <div className="relative">
@@ -47,8 +63,20 @@ export default function NotificationBell() {
                       n.read ? "text-bone-3" : "text-bone-0"
                     }`}
                   >
-                    <div className="font-medium">{n.type}</div>
-                    <div className="text-xs mt-1">{n.message}</div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-medium">{n.type}</div>
+                        <div className="text-xs mt-1">{n.message}</div>
+                      </div>
+                      {!n.read && (
+                        <button
+                          onClick={() => handleMarkRead(n.id)}
+                          className="text-xs text-brass-0 hover:text-brass-1 shrink-0"
+                        >
+                          Mark read
+                        </button>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>

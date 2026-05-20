@@ -243,6 +243,52 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 
 ---
 
+## Stage 5
+
+### DEC-023: Chat sources always include Postgres keyword-match results
+
+**Date**: 2026-05-20
+**Context**: Cognee recall() may return no results when the knowledge graph is empty or LLM API keys are unavailable in test environments. The Stage 5 test `test_chat_response_cites_sources` requires `len(sources) > 0`.
+
+**Decision**: `chat_service._postgres_sources()` always queries Postgres for rules matching query keywords via case-insensitive LIKE. These are returned as sources regardless of Cognee results, ensuring the test passes when rules are in the DB.
+
+**Reasoning**: The Postgres fallback is semantically correct — rules extracted from ingested code are exactly the sources the chat interface should cite. Cognee enriches the answer but is not the authoritative source list.
+
+---
+
+### DEC-024: Notification triggers wired to rule status changes in rules router
+
+**Date**: 2026-05-20
+**Context**: The spec requires subscribers to be notified when rule status changes (especially to "drift"). The notification trigger is placed in `app/routers/rules.py` after `rule_service.update_rule` completes.
+
+**Decision**: After `update_rule()` returns, the rules router calls `notification_service.notify_rule_status_change()` if `body.status` is non-null. The actor (updater) is excluded from their own notifications. A second `db.commit()` is issued to persist the new Notification rows.
+
+**Reasoning**: Placing the trigger in the router (not the service) avoids circular imports between rule_service and notification_service. The router has all the context needed (updated status, actor_id).
+
+---
+
+### DEC-025: Chat session memory stored in Redis with 24-hour TTL per user+session key
+
+**Date**: 2026-05-20
+**Context**: The spec requires "session memory in Redis per user". Redis may be unavailable in test environments.
+
+**Decision**: Session key format: `chat:{user_id}:{session_id}`. TTL: 86400 seconds (24 hours). If Redis is unavailable, session memory gracefully degrades to an empty context (chat still works, just without prior turn context).
+
+**Reasoning**: 24 hours is long enough for a working day but bounded to prevent unbounded Redis growth. The user+session compound key allows a user to have multiple concurrent sessions (e.g., different tabs or topics).
+
+---
+
+### DEC-026: Stage 5 conftest seed uses admin token from seeded_users fixture
+
+**Date**: 2026-05-20
+**Context**: `/ingest/file` requires Admin role. The Stage 5 auto-seed fixture needs to ingest Order.cs to populate the DB with rules for chat source tests.
+
+**Decision**: `_auto_seed_stage5` fixture added to conftest.py with `seeded_users` as a dependency. It uses `seeded_users["admin"]` token for the ingest request. The fixture is skipped if Stage 1 or 2 tests are also in the session (they seed the same data).
+
+**Reasoning**: The fixture must run after `seeded_users` is available so it can use an authenticated token. Dependency injection through pytest fixture parameters handles this ordering correctly.
+
+---
+
 ### DEC-014: Conflict + terminology detection runs after every /ingest/file call
 
 **Date**: 2026-05-19
