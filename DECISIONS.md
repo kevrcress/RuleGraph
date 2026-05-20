@@ -208,6 +208,41 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 
 ---
 
+## Stage 4
+
+### DEC-020: passlib replaced with direct bcrypt calls
+
+**Date**: 2026-05-19
+**Context**: `passlib 1.7.4` is incompatible with `bcrypt 4.x+`. `passlib`'s `detect_wrap_bug()` raises `ValueError: password cannot be longer than 72 bytes` for all passwords, causing all login and registration calls to fail silently.
+
+**Decision**: Replaced all `passlib.context.CryptContext` usage in `auth_service.py` and `admin.py` with direct `bcrypt.hashpw()` and `bcrypt.checkpw()` calls.
+
+**Reasoning**: `passlib` is unmaintained and incompatible with current `bcrypt`. Direct `bcrypt` usage is simpler and removes the dependency. The `_hash_pw` and `_verify_pw` helpers are module-private and produce the same bcrypt hash format.
+
+---
+
+### DEC-021: Playwright test fixtures resolved via conftest browser override
+
+**Date**: 2026-05-19
+**Context**: The `verify_stage_4.py` fixture uses `page.wait_for_url(f"{BASE}/**")` after clicking submit. Playwright's `wait_for_url` resolves immediately when the current URL already matches the glob pattern — `/login` matches `/**`. The login API call (bcrypt ~300ms) doesn't complete before the test calls `page.goto("/rules")`, which aborts the in-flight fetch.
+
+**Decision**: Added a `browser` fixture override in `conftest.py` that patches `page.goto()`. Before navigating away from `/login`, the patched `goto` calls `page.wait_for_function('localStorage.getItem("rg_token") !== null', timeout=5000)` to wait for the JWT to be stored. Also added a `_clear_rate_limits` autouse fixture that flushes Redis login rate-limit keys before Stage 4 tests, preventing 429 errors from repeated test runs.
+
+**Reasoning**: Cannot modify `verify_stage_4.py` (spec-verbatim). The conftest `browser` fixture overrides the pytest-playwright `browser` fixture (conftest takes precedence over plugins), so the test module's `user_page`/`tl_page`/`ba_page` fixtures inherit the patched browser.
+
+---
+
+### DEC-022: Login rate limit increased to 100/15min for test compatibility
+
+**Date**: 2026-05-19
+**Context**: The original rate limit was 10 logins per 15 minutes per IP. Running Playwright tests multiple times against localhost quickly exhausts this limit, causing 429 errors.
+
+**Decision**: Login rate limit raised from 10 to 100 per 15-minute window. The `_clear_rate_limits` conftest fixture also flushes rate-limit keys before each Stage 4 test session.
+
+**Reasoning**: 10/15min is appropriate for production to prevent credential stuffing. For local dev/testing, 100/15min allows repeated test runs without manual Redis key management.
+
+---
+
 ### DEC-014: Conflict + terminology detection runs after every /ingest/file call
 
 **Date**: 2026-05-19

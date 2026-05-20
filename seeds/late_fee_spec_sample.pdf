@@ -1,0 +1,62 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R
+   /MediaBox [0 0 612 792]
+   /Contents 4 0 R
+   /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>
+>>
+endobj
+4 0 obj
+<< /Length 2454 >>
+stream
+BT /F1 10 Tf 50 700 Td (Late Fee Policy Specification v2.1) Tj ET
+BT /F1 10 Tf 50 686 Td (===================================) Tj ET
+BT /F1 10 Tf 50 672 Td () Tj ET
+BT /F1 10 Tf 50 658 Td (1. Grace Period Definition) Tj ET
+BT /F1 10 Tf 50 644 Td (   Customers have a grace period after the payment due date before a late fee is applied.) Tj ET
+BT /F1 10 Tf 50 630 Td (   Standard accounts: 7 days grace period.) Tj ET
+BT /F1 10 Tf 50 616 Td (   Premium accounts: 14 days extended grace period.) Tj ET
+BT /F1 10 Tf 50 602 Td () Tj ET
+BT /F1 10 Tf 50 588 Td (2. Late Fee Calculation) Tj ET
+BT /F1 10 Tf 50 574 Td (   Late fee rate: 1.5% of the outstanding balance per day overdue after the grace period.) Tj ET
+BT /F1 10 Tf 50 560 Td (   Maximum late fee cap: 25% of the original invoice amount.) Tj ET
+BT /F1 10 Tf 50 546 Td (   Late fees are calculated on a daily basis starting from day 1 after the grace period expires.) Tj ET
+BT /F1 10 Tf 50 532 Td () Tj ET
+BT /F1 10 Tf 50 518 Td (3. Payment Cancellation Window) Tj ET
+BT /F1 10 Tf 50 504 Td (   Payments may be cancelled within the grace period without incurring fees.) Tj ET
+BT /F1 10 Tf 50 490 Td (   Cancellation is not permitted once stock confirmation has been acknowledged.) Tj ET
+BT /F1 10 Tf 50 476 Td () Tj ET
+BT /F1 10 Tf 50 462 Td (4. Customer Eligibility) Tj ET
+BT /F1 10 Tf 50 448 Td (   All account types are subject to late fee policies.) Tj ET
+BT /F1 10 Tf 50 434 Td (   Premium accounts receive extended grace period as a loyalty benefit.) Tj ET
+BT /F1 10 Tf 50 420 Td (   Accounts in arrears for more than 90 days are escalated to collections.) Tj ET
+BT /F1 10 Tf 50 406 Td () Tj ET
+BT /F1 10 Tf 50 392 Td (5. Stock Confirmation Rule) Tj ET
+BT /F1 10 Tf 50 378 Td (   Payment processing requires confirmation that stock is available.) Tj ET
+BT /F1 10 Tf 50 364 Td (   Stock availability must be validated before payment authorization proceeds.) Tj ET
+BT /F1 10 Tf 50 350 Td (   Double-validation of stock across services should be reconciled.) Tj ET
+BT /F1 10 Tf 50 336 Td () Tj ET
+BT /F1 10 Tf 50 322 Td (6. Buyer and Customer Terminology) Tj ET
+BT /F1 10 Tf 50 308 Td (   The term 'buyer' is used in the ordering service to identify the purchasing party.) Tj ET
+BT /F1 10 Tf 50 294 Td (   The term 'customer' is used in the payments service for the same entity.) Tj ET
+BT /F1 10 Tf 50 280 Td (   A shared canonical term 'customer_id' is recommended for future consistency.) Tj ET
+endstream
+endobj
+xref
+0 5
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000299 00000 n 
+trailer
+<< /Size 5 /Root 1 0 R >>
+startxref
+2805
+%%EOF

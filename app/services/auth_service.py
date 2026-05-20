@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,17 @@ from app.models.user import User
 from app.security.jwt import create_access_token, DEFAULT_TTL_MINUTES
 
 logger = logging.getLogger(__name__)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_pw(password: str) -> str:
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
+
+
+def _verify_pw(password: str, hashed: str) -> bool:
+    try:
+        return _bcrypt.checkpw(password.encode(), hashed.encode())
+    except Exception:
+        return False
 
 
 async def write_audit(
@@ -60,7 +70,7 @@ async def register_user(
         username=username,
         email=email,
         name=name,
-        password_hash=pwd_context.hash(password),
+        password_hash=_hash_pw(password),
         role=role,
     )
     db.add(user)
@@ -79,7 +89,7 @@ async def login_user(
     result = await db.execute(select(User).where(User.email == email))
     user: Optional[User] = result.scalar_one_or_none()
 
-    if user is None or not pwd_context.verify(password, user.password_hash):
+    if user is None or not _verify_pw(password, user.password_hash):
         if user:
             await write_audit(db, "auth.login_failed", user_id=user.id, ip_address=ip_address, detail={"email": email})
         else:
@@ -91,4 +101,5 @@ async def login_user(
     await db.flush()
     await write_audit(db, "auth.login", user_id=user.id, target_type="user", target_id=user.id, ip_address=ip_address)
 
-    return create_access_token(str(user.id), user.role, user.email, ttl_minutes)
+    return create_access_token(str(user.id), user.role, user.email, ttl_minutes,
+                               name=user.name, username=user.username)

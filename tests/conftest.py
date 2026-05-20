@@ -12,6 +12,67 @@ from app.main import app
 from app.database import Base, get_db
 from app.config import settings
 
+
+# ---------------------------------------------------------------------------
+# Clear Redis rate-limit keys before any Stage 4 (Playwright) tests.
+# Re-running the test suite would otherwise exhaust the per-IP login limit.
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session", autouse=True)
+def _clear_rate_limits(request):
+    stage4_collected = any(
+        "verify_stage_4" in item.nodeid
+        for item in request.session.items
+    )
+    if not stage4_collected:
+        return
+    try:
+        import redis as _redis_sync
+        r = _redis_sync.from_url("redis://localhost:6379", decode_responses=True)
+        for key in r.keys("rl:login:*"):
+            r.delete(key)
+        r.close()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Playwright browser fixture — patches page.goto() so that navigating away
+# from /login waits for the rg_token to land in localStorage first.
+# This is needed because Playwright's wait_for_url("/**") resolves
+# immediately when the current URL (/login) already matches the glob pattern,
+# which means the fixture yields before the async login fetch completes.
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="session")
+def browser(playwright, browser_type, browser_type_launch_args):
+    _browser = browser_type.launch(**browser_type_launch_args)
+
+    original_new_page = _browser.new_page
+
+    def _patched_new_page(*args, **kwargs):
+        page = original_new_page(*args, **kwargs)
+        _original_goto = page.goto
+
+        def _patched_goto(url, *goto_args, **goto_kwargs):
+            try:
+                if "/login" in page.url:
+                    token = page.evaluate('localStorage.getItem("rg_token")')
+                    if token is None:
+                        page.wait_for_function(
+                            'localStorage.getItem("rg_token") !== null',
+                            timeout=5000,
+                        )
+            except Exception:
+                pass
+            return _original_goto(url, *goto_args, **goto_kwargs)
+
+        page.goto = _patched_goto
+        return page
+
+    _browser.new_page = _patched_new_page
+
+    yield _browser
+    _browser.close()
+
 # Use a dedicated test database, never the dev database
 TEST_DATABASE_URL = settings.database_url.replace(
     "/rulegraph", "/rulegraph_test"

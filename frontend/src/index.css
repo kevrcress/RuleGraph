@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink-0: #0e0d0c;
+  --ink-1: #161513;
+  --ink-2: #1e1c19;
+  --ink-3: #2a2820;
+  --ink-4: #3a3830;
+  --bone-0: #e8e0d0;
+  --bone-1: #c8c0b0;
+  --bone-2: #a8a090;
+  --bone-3: #787060;
+  --bone-4: #484038;
+  --brass-0: #c9a84c;
+  --brass-1: #8a6f32;
+  --brass-2: #5a4820;
+  --ember: #c0392b;
+  --serif: "Newsreader", Georgia, serif;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  background: var(--ink-0);
+  color: var(--bone-0);
+}
+
+#root {
+  min-height: 100vh;
+}

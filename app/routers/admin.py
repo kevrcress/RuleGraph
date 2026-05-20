@@ -25,12 +25,15 @@ from app.schemas.user import AdminUserCreate, AdminUserUpdate, PaginatedUsers, U
 from app.services import rule_service
 from app.services.auth_service import write_audit
 from app.services.workitem_service import create_work_item
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_pw(password: str) -> str:
+    return _bcrypt.hashpw(password.encode(), _bcrypt.gensalt()).decode()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Ingest errors
@@ -153,7 +156,7 @@ async def create_user(
         username=body.username,
         email=body.email,
         name=body.name,
-        password_hash=pwd_context.hash(body.password),
+        password_hash=_hash_pw(body.password),
         role=body.role,
     )
     db.add(user)

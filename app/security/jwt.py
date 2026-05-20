@@ -14,12 +14,16 @@ def create_access_token(
     role: str,
     email: str,
     ttl_minutes: int = DEFAULT_TTL_MINUTES,
+    name: str = "",
+    username: str = "",
 ) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
     payload = {
         "sub": user_id,
         "role": role,
         "email": email,
+        "name": name,
+        "username": username,
         "exp": expire,
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=ALGORITHM)

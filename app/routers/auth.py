@@ -50,7 +50,7 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     ip = _client_ip(request)
-    allowed, _ = await check_rate_limit(f"login:{ip}", limit=10, window_seconds=900)
+    allowed, _ = await check_rate_limit(f"login:{ip}", limit=100, window_seconds=900)
     if not allowed:
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")
 
