@@ -464,6 +464,7 @@ async def get_settings(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
+    from app.config import settings as _cfg
     settings_result = await db.execute(select(SystemSetting).order_by(SystemSetting.key))
     out: dict[str, str] = {}
     for s in settings_result.scalars().all():
@@ -472,6 +473,10 @@ async def get_settings(
             out[s.key] = _MASKED
         else:
             out[s.key] = s.value
+    # Always surface model/proxy keys so the UI can display and edit them before first save.
+    out.setdefault("simple_model", _cfg.simple_model)
+    out.setdefault("complex_model", _cfg.complex_model)
+    out.setdefault("litellm_base_url", _cfg.litellm_base_url)
     return {"settings": out}
 
 

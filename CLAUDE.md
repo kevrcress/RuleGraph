@@ -1,31 +1,352 @@
-# RuleGraph — Claude Code Context
+<!-- HVE:START - managed by hve-claude, do not edit between markers -->
+# HVE Claude — Hypervelocity Engineering for Claude Code
 
-## Project
-RuleGraph is an AI-powered business rules knowledge graph. Full spec
-is in `rulegraph-spec-v0.5.md`. Read it before writing any code.
+This repository provides the **HVE Core** workflow adapted natively for Claude Code. It implements the Research → Plan → Implement → Review (RPI) methodology using slash commands, subagents, and durable file-based handoff artifacts.
 
-## Working rules
-- One stage at a time. Do not build ahead of the current stage.
-- Run `pytest tests/unit/ tests/integration/ -v` before any stage
-  verification script. Fix regressions first.
-- Only stop when pytest exits 0. Print `[STAGE N COMPLETE]` summary.
-- Log every non-spec decision to `DECISIONS.md` with reasoning.
+Adapted from [microsoft/hve-core](https://github.com/microsoft/hve-core) under the MIT License.
+
+---
+
+## The RPI Methodology
+
+HVE's core insight: when an AI cannot implement during research, it stops optimizing for plausible code and starts optimizing for verified truth. Separating phases by role produces higher-quality outcomes than asking a single session to do everything at once.
+
+**Five operating principles:**
+
+1. **Context discipline** — After a subagent returns, respond with lean summaries only. Do not re-read large artifacts into context.
+2. **Durable artifacts over chat** — All research, plans, and reviews live in `.claude-hve-tracking/`. Chat is ephemeral; disk is the source of truth.
+3. **Evidence-based responses** — Every finding cites `file:line` (e.g. `src/auth/middleware.ts:47`). No unsupported claims.
+4. **Difficulty-adaptive workflow** — Classify tasks before acting. Simple tasks skip subagents. Complex tasks use full parallel dispatch.
+5. **Lean turns** — Parent agents return a one-line summary after subagent work. Full detail lives in the log file.
+
+**Difficulty classifications:**
+
+| Level | Characteristics | Approach |
+|---|---|---|
+| Simple | < 50 lines, single file, clear requirements | Skip subagents; implement directly |
+| Medium | 2–5 files, known patterns | 1–2 researcher subagents |
+| Medium-Hard | Cross-cutting, multiple modules | Parallel research + plan validation |
+| Challenging | New patterns, high risk, unclear requirements | Full parallel dispatch: research, plan, implement, review |
+
+**Effort level:** For Challenging-difficulty tasks, increase reasoning depth by passing `--effort xhigh` on the CLI or setting `effortLevel: xhigh` in `.claude/settings.json`. This extends the model's internal reasoning budget, improving plan quality and review thoroughness at higher token cost.
+
+---
+
+## Command Reference
+
+| Command | Purpose | When to use |
+|---|---|---|
+| `/hve <task>` | Full RPI loop: Research → Plan → Implement → Review. `--mode lightweight` skips subagents and implements directly; `--mode standard` runs the full loop with 1–2 researchers; `--mode full` uses maximum parallel dispatch. `--think` activates extended reasoning during planning (auto-enabled for Challenging tasks and `--mode full`). | Default for any non-trivial task |
+| `/hve-research <task>` | Research phase only | When you want to investigate before committing to a plan |
+| `/hve-plan` | Plan phase only. Accepts `--think` for extended reasoning. | After research exists; reads latest research artifact |
+| `/hve-implement` | Implement phase only | After a plan exists; reads latest plan artifact |
+| `/hve-review` | Review phase only. Accepts `--think` for extended reasoning during verdict synthesis. | After implementation; validates changes against plan |
+| `/hve-pr-review` | Senior-level PR code review. Accepts `--compact` to run 4 paired subagents instead of 8 for a faster review. | Before merging a branch |
+| `/hve-memory` | Save conversation context for future sessions | When ending a session mid-task |
+| `/hve-challenge` | Adversarial questioning of current work | When you want a skeptic's view on a plan or implementation |
+| `/hve-doc-ops` | Documentation QA and gap detection | After major feature work |
+| `/hve-prompt-builder` | Iterative prompt engineering sandbox | When authoring new HVE agents or prompts |
+| `/hve-prompt-analyze <file>` | Evaluate an existing artifact against quality criteria | Quick quality check without full rebuild |
+| `/hve-prompt-refactor <file>` | Remove low-quality or AI-generated boilerplate from an existing artifact | When porting or cleaning up prompt files |
+| `/hve-git-commit` | Stage safely, generate conventional commit message, commit | Before every commit |
+| `/hve-git-merge <op> <branch>` | Merge / rebase / rebase-onto with conflict handling | When integrating branches |
+| `/hve-git-setup` | Audit and configure git identity and tooling | New machine or project setup |
+
+**Standalone phase commands** discover the latest tracking artifact automatically — no manual file attachment required. To resume in a new conversation, just run the next phase command and it will find the handoff file.
+
+---
+
+## Model Selection
+
+Three layers decide which model runs what:
+
+1. **Commands run on the session model.** Slash commands execute in the main conversation, so they use whatever `/model` is set to (or the `model` key in settings.json if no session override). HVE commands never set a model themselves.
+2. **Subagents default to their frontmatter `model:`.** Validators and researchers are pinned to `haiku` for cost; implementors and prompt-builders use `inherit` (the session model).
+3. **`--subagent-model <sonnet|opus|haiku>` overrides frontmatter for one run.** Every subagent-dispatching command accepts this flag and passes it through the Agent tool's `model` parameter, which takes precedence over agent frontmatter. Example: `/hve-plan --subagent-model sonnet`.
+
+The Agent tool's model parameter only accepts the named tiers (`sonnet`, `opus`, `haiku`), not full model IDs. To run subagents on a custom or preview model (e.g. a `claude-*` ID set via `/model`), change that agent's frontmatter to `model: inherit` so it follows the session model; the flag cannot do this.
+
+---
+
+## Tracking Folder Structure
+
+All runtime artifacts live in `.claude-hve-tracking/`. Durable artifacts are committed; only regenerable output is gitignored — see [Tracking folder & version control](#tracking-folder--version-control) below. This folder is the handoff medium between phases and between sessions.
+
+```
+.claude-hve-tracking/
+├── research/
+│   ├── YYYY-MM-DD/topic.md                    # Consolidated findings
+│   └── subagents/YYYY-MM-DD/topic.md           # Per-subagent raw findings
+├── plans/
+│   ├── YYYY-MM-DD/task-slug-plan.md            # Implementation plan (phases + dependencies)
+│   └── logs/YYYY-MM-DD/task-slug-log.md        # Planning discrepancy log (DR-/DD- items; DR = Discrepancy from Research, DD = Design Decision)
+├── details/
+│   └── YYYY-MM-DD/task-slug-details.md         # Implementation details
+├── changes/
+│   └── YYYY-MM-DD/task-slug-changes.md         # Changes log (updated per phase)
+├── reviews/
+│   ├── rpi/YYYY-MM-DD/                         # RPI validation output
+│   └── pr/branch-name/                         # PR review output
+├── challenges/
+│   └── YYYY-MM-DD-topic-challenge.md
+├── memory/
+│   └── YYYY-MM-DD/kebab-slug.md
+├── doc-ops/
+│   └── YYYY-MM-DD-session.md
+└── sandbox/
+    └── YYYY-MM-DD-topic-run-N/
+```
+
+---
+
+## Artifact Naming Conventions
+
+- **Date format:** `YYYY-MM-DD` (always today's date when created)
+- **Slug format:** `kebab-case-description` derived from the task description (3–6 words max)
+- **Plan file suffix:** `-plan.md`
+- **Details file suffix:** `-details.md`
+- **Changes file suffix:** `-changes.md`
+- **Log file suffix:** `-log.md`
+
+Example: task "add OAuth2 to the API" → slug `add-oauth2-api`
+- Plan: `.claude-hve-tracking/plans/2025-01-15/add-oauth2-api-plan.md`
+- Changes: `.claude-hve-tracking/changes/2025-01-15/add-oauth2-api-changes.md`
+
+---
+
+## Severity Grading
+
+Used in all review, validation, and challenge agents:
+
+| Level | Definition |
+|---|---|
+| **Critical** | Missing or incorrect required functionality; blocks completion |
+| **Major** | Specification deviation that degrades correctness, maintainability, or security |
+| **Minor** | Style gap, documentation omission, or improvement opportunity |
+
+Finding ID format: `IV-001`, `IV-002`, ... (sequential per session, reset per artifact; IV = Implementation Validation)
+
+---
+
+## Confidence Markers
+
+All key assumptions in handoff artifacts must carry a confidence marker:
+
+- `[HIGH]` — Verified directly from code, tests, or documentation
+- `[MEDIUM]` — Inferred from patterns or indirect evidence
+- `[LOW]` — Assumed; needs validation in next phase
+
+Example: `Authentication uses JWT tokens [HIGH] with 24h expiry [MEDIUM]`
+
+---
+
+## Corrections in Tracking Artifacts
+
+Falsified statements in tracking artifacts are never silently rewritten. When later work proves an earlier claim wrong:
+
+1. Annotate the stale claim in place: `(superseded — see Correction YYYY-MM-DD)`
+2. Append a dated `Correction (YYYY-MM-DD):` entry in the owning phase's section explaining what was learned and what the claim should have said
+
+The phase that learns the corrected information owns writing the correction. A changes log that contradicts itself without correction annotations cannot be graded ✅ Complete in review.
+
+---
+
+## Citation Format
+
+All subagent findings must cite locations as `file:line`:
+
+```
+src/auth/middleware.ts:47          ← correct
+./src/auth/middleware.ts           ← acceptable (no line number)
+[middleware.ts](src/auth/...)      ← WRONG: no markdown links
+```
+
+Use plain workspace-relative paths. No markdown hyperlinks in findings.
+
+**Snapshots vs. living docs:** `file:line` citations are for dated tracking artifacts (`.claude-hve-tracking/` — snapshots that age with their date). Living docs (any tracked markdown outside `.claude-hve-tracking/`, e.g. contributor guides, READMEs, architecture notes) anchor to symbols instead (`Class.Method`, function names), optionally with a dated line hint ("as of YYYY-MM-DD"), and prefer pointing at tests as compile-checked living examples. Line numbers in living docs rot silently after the first edit to the cited file.
+
+---
+
+## Subagent Response Protocol
+
+All HVE subagents return in this format (never more):
+
+1. One line: artifact path written (the parent re-reads this for detail)
+2. One line: status — validators use Pass / Fail; other agents use Complete / Blocked
+3. Up to **7 bullet-point findings** (≤ 240 chars each; prioritize Critical/Major)
+4. A checklist of up to **5 recommended follow-on items** not yet completed
+5. Up to **3 clarifying questions** — only if blocking
+6. One line: "Full detail: re-read `<path>`"
+
+The parent agent reads the written artifact for full detail. Chat responses are executive summaries only.
+
+---
+
+## Handoff Block Format
+
+Every standalone phase command ends with this copyable block:
+
+```
+╭─────────────────────────────────────────────────────╮
+│  HANDOFF                                            │
+│  Artifact : .claude-hve-tracking/[path/to/file.md] │
+│  Next     : /hve-[next-phase]                       │
+│  Tip      : Start a new conversation, then run the  │
+│             next command — it finds this auto.      │
+╰─────────────────────────────────────────────────────╝
+```
+
+The `/hve` orchestrator omits this block (it handles transitions internally).
+
+---
+
+## Context Management Between Phases
+
+- Phase commands are **fully self-contained**: they discover tracking artifacts from disk, not from conversation history.
+- For tasks spanning multiple phases: **starting a new conversation per phase** is recommended to keep context lean.
+- For simple tasks (< 50 lines, one phase): continuing in the same conversation is fine.
+- No manual file attachment or context management is needed — just run the next command.
+
+---
+
+## Instructions Reference
+
+Before implementing in a specific language or tool, read the relevant conventions file:
+
+| Language / Tool | File |
+|---|---|
+| Bash | `.claude/instructions/bash.md` |
+| Python | `.claude/instructions/python.md` |
+| Python (uv) | `.claude/instructions/python-uv.md` |
+| Python Tests | `.claude/instructions/python-tests.md` |
+| C# | `.claude/instructions/csharp.md` |
+| C# Tests | `.claude/instructions/csharp-tests.md` |
+| Rust | `.claude/instructions/rust.md` |
+| Rust Tests | `.claude/instructions/rust-tests.md` |
+| Terraform | `.claude/instructions/terraform.md` |
+| Markdown | `.claude/instructions/markdown.md` |
+| Git commits | `.claude/instructions/git-commit-messages.md` |
+| Writing Style | `.claude/instructions/writing-style.md` |
+
+Phase commands that involve implementation explicitly instruct Claude to read the relevant file before writing code.
+
+---
+
+## Security Hygiene
+
+All implementation reviews check these automatically (via the `hve-implementation-validator` subagent, dimension 9):
+
+- **Secret exposure**: grep changed files for `PRIVATE KEY`, `api_key\s*=`, `password\s*=`, `Bearer `, `-----BEGIN`, AWS/GCP key prefixes
+- **.gitignore hygiene**: `.env`, `.env.*`, `*.pem`, `*.key`, `*.p12` must be listed
+- **Committed secrets**: `git diff HEAD --name-only` checked for credential-like files
+- **New dependencies**: flagged for review when added; unrecognized registries noted
+
+---
+
+## Optional Power-User: Hooks for Automatic Change Logging
+
+Claude Code's hooks can automatically append file edits to the changes log. Add to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": "Edit|Write",
+      "hooks": [{
+        "type": "command",
+        "command": "echo \"$(date +%Y-%m-%d) - Modified: $CLAUDE_TOOL_INPUT_FILE_PATH\" >> .claude-hve-tracking/changes/auto-log.md"
+      }]
+    }]
+  }
+}
+```
+
+This is optional. The `hve-phase-implementor` subagent writes the changes log explicitly even without hooks.
+
+---
+
+## Installing HVE in Your Project
+
+Run the installer from this repo, pointing it at the target project:
+
+```bash
+./install.sh /path/to/your/project   # or run with no argument from inside the target
+```
+
+The installer copies `.claude/commands/`, `.claude/agents/`, `.claude/instructions/`, and
+`.claude/prompts/`, merges the HVE block into the target's `CLAUDE.md`, and adds the tracking
+`.gitignore` rules. It is idempotent — re-run it to pull updates.
+
+After installing:
+
+1. Append your project-specific context below the `## Your Project` heading in CLAUDE.md
+2. Run `/hve <your first task>` to begin
+
+### Tracking folder & version control
+
+By default the durable HVE artifacts (`research/`, `plans/`, `details/`, `changes/`,
+`reviews/`, `challenges/`, `memory/`, `doc-ops/`) **are committed** — they are the shared
+history and rationale behind your work. Only the regenerable noise is gitignored:
+
+```
+.claude-hve-tracking/**/subagents/
+.claude-hve-tracking/sandbox/
+```
+
+Date+slug naming (`YYYY-MM-DD/topic.md`) keeps parallel work from colliding. To keep the
+whole folder private instead, replace those rules with `.claude-hve-tracking/`.
+
+---
+<!-- HVE:END -->
+
+## Your Project
+
+**RuleGraph** — AI-powered business rules knowledge graph. An LLM-driven pipeline extracts rules from code, docs, and uploaded files, stores them in PostgreSQL with a Cognee graph layer, and exposes them through a REST API and React frontend. All implementation is stage-gated to `rulegraph-spec-v0.5.md` — read it before writing any code.
+
+### Stack
+- **Backend**: FastAPI + asyncpg + SQLAlchemy 2.x (async) + Alembic + Cognee 0.1.15
+- **Frontend**: React 18 + TypeScript + Vite + Tailwind + shadcn/ui
+- **DB**: PostgreSQL 16 (Docker, port 5432) — Postgres only, no SQLite anywhere
+- **Cache/queue**: Redis (Docker, port 6379) + arq for background tasks
+- **LLM**: Anthropic — `claude-haiku-4-5` (simple, threshold < 0.5) / `claude-sonnet-4-5` (complex); config in `rulegraph.yaml`
+
+### Commands
+```bash
+docker compose up -d                        # start Postgres + Redis
+uvicorn app.main:app --reload               # backend (port 8000)
+cd frontend && npm run dev                  # frontend (port 5173)
+pytest tests/unit/ tests/integration/ -v   # full test suite (must exit 0)
+pytest tests/verify_stage_N.py -v          # stage verification (replace N)
+```
+
+### Key files
+| Path | Purpose |
+|---|---|
+| `rulegraph-spec-v0.5.md` | Single source of truth — 33 sections; authoritative for all decisions |
+| `app/main.py` | FastAPI entrypoint; 12+ routers registered here |
+| `app/ingest/` | LLM extraction pipeline, document parsing, error tracking |
+| `app/graph/cognee_client.py` | **All Cognee calls live here exclusively** |
+| `app/services/` | Business logic — impact analysis, feedback, scoring, coverage |
+| `app/models/` | SQLAlchemy ORM models (rules, sources, ingest logs, wiki pages, terminology) |
+| `app/routers/` | API endpoint modules by domain |
+| `app/security/` | JWT auth, encryption, user management |
+| `frontend/src/` | React pages, components, API client, Zustand store |
+| `alembic/` | 10 migrations (0001_initial_schema → 0010_wiki_pages) |
+| `rulegraph.yaml` | App config — LLM models, retry policies, ingest thresholds, pagination |
+| `DECISIONS.md` | Log of every non-spec decision (DEC-NNN) |
+
+### Working rules
+- One stage at a time — do not build ahead of the current stage.
+- Run the full test suite before any stage verification script; fix regressions first.
+- Only stop when `pytest` exits 0. Print `[STAGE N COMPLETE]` summary.
+- Log every non-spec decision to `DECISIONS.md` with reasoning (DEC-NNN format).
 - Never commit with failing tests.
 - Never return PAT values in API responses.
-- All Cognee calls isolated in `app/graph/cognee_client.py` only.
-- Postgres only — no SQLite anywhere.
-- Secrets from environment only — never in `rulegraph.yaml`.
+- Secrets from environment only — never hardcoded in `rulegraph.yaml`.
 
-## Stack
-- Backend: FastAPI + asyncpg + SQLAlchemy 2.x + Alembic + Cognee
-- Frontend: React 18 + TypeScript + Vite + Tailwind + shadcn/ui
-- DB: PostgreSQL (Docker)
-- Cache/queue: Redis (Docker)
-- LLM: Anthropic — claude-haiku-4-5 (simple) / claude-sonnet-4-5 (complex)
-
-## Commands
-- Start services: `docker compose up -d`
-- Run backend: `uvicorn app.main:app --reload`
-- Run frontend: `cd frontend && npm run dev`
-- Run tests: `pytest tests/unit/ tests/integration/ -v`
-- Run stage check: `pytest tests/verify_stage_N.py -v`
+### Key constraints
+- Cognee failures are silent — logged but not surfaced in `ingest_errors`; Postgres is the source of truth (DEC-001, DEC-004).
+- Database URLs must use `postgresql+asyncpg://` — auto-corrected on startup (DEC-002).
+- Retry limits: LLM extraction max 1, Cognee max 1, source connectors max 2.
+- All backend I/O is async/await (SQLAlchemy async session, httpx, arq).
+- Test DB is `rulegraph_test` (see `tests/conftest.py`).

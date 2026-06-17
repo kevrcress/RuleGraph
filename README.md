@@ -37,6 +37,22 @@ Most organizations have business logic scattered across dozens of microservices 
 
 ---
 
+## Screenshots
+
+**Rules catalog** — browse extracted rules with status, confidence score, and source attribution. Filter by service, status, or search by keyword.
+
+![Rules catalog](screenshots/Screenshot%201%20RuleGraph.png)
+
+**Rule detail** — three-mode view (Defined / Implemented / Compare) with feedback controls, source file link, and an impact panel showing what else depends on this rule.
+
+![Rule detail](screenshots/Screenshot%202%20RuleGraph.png)
+
+**AI-generated wiki** — per-service summaries auto-generated from ingested code, with a linked rule list for navigating from high-level docs back to individual rules.
+
+![AI-generated wiki](screenshots/Screenshot%203%20RuleGraph.png)
+
+---
+
 ## Architecture
 
 ```
@@ -49,9 +65,13 @@ FastAPI (Python) ─── JWT auth, role-based access
        ├── Redis       ← sessions, rate limits, task queue (arq)
        └── Cognee/LanceDB ← knowledge graph + vector search (best-effort enrichment)
 
-LLM routing:
+LLM routing (Anthropic — default):
   complexity < 0.5  →  claude-haiku-4-5   (fast, cheap)
   complexity ≥ 0.5  →  claude-sonnet-4-5  (thorough)
+
+LLM routing (local — via LiteLLM proxy):
+  set LITELLM_BASE_URL  →  routes all extraction through any Ollama/local model
+  Batches API unavailable in proxy mode; files are processed sequentially
 ```
 
 **Roles:** User · Business Admin · Technical Lead · Admin — each with a different view and different permissions in the approval chain.
@@ -90,6 +110,23 @@ REDIS_URL=redis://localhost:6379
 ANTHROPIC_API_KEY=sk-ant-...
 JWT_SECRET_KEY=<paste from above>
 ```
+
+**Optional — run without an Anthropic key using a local model:**
+
+Install LiteLLM and start a proxy in front of any Ollama model:
+
+```bash
+pip install litellm
+litellm --model ollama/gemma3 --port 4000
+```
+
+Then add to `.env` (no `ANTHROPIC_API_KEY` required):
+
+```env
+LITELLM_BASE_URL=http://localhost:4000
+```
+
+Rule extraction will route through the proxy instead of Anthropic. Note: the Batches API is unavailable in proxy mode, so files are processed sequentially (same quality, slightly slower for large repos).
 
 ### 2. Start infrastructure
 
@@ -196,7 +233,7 @@ pytest tests/unit/ tests/integration/ -v
 pytest tests/unit/ tests/integration/ tests/verify_stage_6.py -v
 ```
 
-The test suite uses a separate `rulegraph_test` database. All 150 tests run without a live server, Anthropic key, or Cognee — the LLM and graph calls are mocked where needed.
+The test suite uses a separate `rulegraph_test` database. All tests run without a live server, Anthropic key, or Cognee — the LLM and graph calls are mocked where needed.
 
 ---
 

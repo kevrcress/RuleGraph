@@ -19,16 +19,39 @@ except ImportError:
     logger.warning("cognee package not available — graph enrichment disabled")
 
 
-async def init_cognee() -> None:
-    """Initialize cognee with Anthropic LLM provider."""
+async def init_cognee(db=None) -> None:
+    """Initialize Cognee LLM provider.
+
+    When a DB session is provided, reads litellm_base_url and complex_model from
+    admin settings so Cognee can route through the LiteLLM proxy if configured.
+    """
     if not _cognee_available:
         logger.warning("Cognee not available, skipping initialization")
         return
     try:
-        cognee.config.set_llm_provider("anthropic")
-        cognee.config.set_llm_model("claude-sonnet-4-5")
-        # cognee uses ANTHROPIC_API_KEY from environment automatically
-        logger.info("Cognee initialized with Anthropic provider")
+        from app.config import settings as _cfg
+
+        base_url = _cfg.litellm_base_url
+        model = _cfg.complex_model
+
+        if db is not None:
+            from app.services.settings_service import get_litellm_base_url, get_complex_model
+            base_url = await get_litellm_base_url(db) or base_url
+            model = await get_complex_model(db) or model
+
+        if base_url:
+            # Route Cognee through the LiteLLM proxy using the OpenAI-compatible endpoint.
+            # LiteLLM exposes /v1 which cognee's openai provider can reach.
+            cognee.config.set_llm_provider("openai")
+            cognee.config.set_llm_endpoint(base_url.rstrip("/") + "/v1")
+            cognee.config.set_llm_api_key("litellm")
+            cognee.config.set_llm_model(model)
+            logger.info("Cognee initialized via LiteLLM proxy at %s (model: %s)", base_url, model)
+        else:
+            cognee.config.set_llm_provider("anthropic")
+            cognee.config.set_llm_model(model)
+            # cognee uses ANTHROPIC_API_KEY from environment automatically
+            logger.info("Cognee initialized with Anthropic provider (model: %s)", model)
     except Exception as e:
         # Cognee init failure must never crash the application
         logger.warning(f"Cognee initialization failed (graph enrichment will be disabled): {e}")
@@ -49,6 +72,10 @@ async def add_to_graph(content: str, dataset_name: str = "rulegraph", db=None) -
         if not await is_claude_enabled(db):
             logger.info("Claude API disabled by admin — skipping Cognee graph enrichment")
             return None
+        # Close the implicit read transaction before the Cognee call — Cognee runs
+        # its own LLM internally and can take >30s, which would trip
+        # idle_in_transaction_session_timeout and kill the connection.
+        await db.commit()
     try:
         await cognee.add(content, dataset_name)
         # cognify may not exist in all versions of cognee 0.1.15

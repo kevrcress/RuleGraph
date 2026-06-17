@@ -3,9 +3,12 @@ Application configuration using Pydantic Settings.
 Validates all required environment variables at startup.
 Exits with a clear error message if any required variable is missing.
 """
+import logging
 import sys
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -17,6 +20,7 @@ class Settings(BaseSettings):
 
     # LLM — optional at startup; can be set via Admin → Settings instead
     anthropic_api_key: str = Field(default="", description="Anthropic API key (can be set via admin UI instead)")
+    litellm_base_url: str = Field(default="", description="Optional LiteLLM proxy base URL for local model testing")
 
     # Security
     jwt_secret_key: str = Field(..., description="Secret key for JWT token signing")
@@ -60,7 +64,14 @@ class Settings(BaseSettings):
 
 def _load_settings() -> Settings:
     try:
-        return Settings()
+        s = Settings()
+        if s.litellm_base_url and not s.anthropic_api_key:
+            logger.warning(
+                "LiteLLM proxy mode active (LITELLM_BASE_URL=%s). "
+                "ANTHROPIC_API_KEY is not set — extractor will route through the proxy.",
+                s.litellm_base_url,
+            )
+        return s
     except Exception as e:
         print(f"\n[RuleGraph] FATAL: Configuration error — {e}", file=sys.stderr)
         print("[RuleGraph] Check that all required environment variables are set.", file=sys.stderr)

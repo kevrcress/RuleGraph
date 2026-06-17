@@ -362,6 +362,17 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 
 ---
 
+### DEC-033: LiteLLM proxy support uses Anthropic SDK's `base_url` override, not the LiteLLM Python client
+
+**Date**: 2026-06-17
+**Context**: Added `LITELLM_BASE_URL` environment variable so the extractor can be pointed at a local model (e.g. Ollama + Gemma) for zero-cost testing without changing production behavior.
+
+**Decision**: When `LITELLM_BASE_URL` is set, `extractor._get_client()` constructs the Anthropic client as `anthropic.AsyncAnthropic(api_key="litellm", base_url=<url>)` instead of importing or instantiating the `litellm` Python package directly.
+
+**Reasoning**: The Anthropic SDK's `base_url` override is the correct mechanism because LiteLLM exposes an Anthropic-compatible REST endpoint. Using it requires zero new Python dependencies — the `anthropic` package is already installed. The `litellm` Python client would add a heavy transitive dependency tree and is unnecessary when the proxy is already running as a sidecar. Cognee's LiteLLM integration is left pointing at Anthropic for now (no confirmed API for setting a custom endpoint in cognee 0.1.15 without risking breakage).
+
+---
+
 ### DEC-031: Ingest derives per-module services from file paths instead of one service per repo
 
 **Date**: 2026-05-21

@@ -16,6 +16,7 @@ const sectionStyle: React.CSSProperties = {
 
 const FEATURE_FLAG_KEYS = ["claude_enabled"] as const;
 const SENSITIVE_KEYS = ["anthropic_api_key"] as const;
+const MODEL_KEYS = ["simple_model", "complex_model", "litellm_base_url"] as const;
 const MASKED = "***SET***";
 
 export default function Settings() {
@@ -33,6 +34,7 @@ export default function Settings() {
   const [wikiResult, setWikiResult] = useState<string | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState(false);
+  const [modelSaved, setModelSaved] = useState(false);
   const [flagSaved, setFlagSaved] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
@@ -55,11 +57,21 @@ export default function Settings() {
     const nonFlags = Object.fromEntries(
       Object.entries(form).filter(([k]) =>
         !FEATURE_FLAG_KEYS.includes(k as typeof FEATURE_FLAG_KEYS[number]) &&
-        !SENSITIVE_KEYS.includes(k as typeof SENSITIVE_KEYS[number])
+        !SENSITIVE_KEYS.includes(k as typeof SENSITIVE_KEYS[number]) &&
+        !MODEL_KEYS.includes(k as typeof MODEL_KEYS[number])
       )
     );
     save(nonFlags, {
       onSuccess: () => { setSaved(true); setTimeout(() => setSaved(false), 2000); },
+    });
+  };
+
+  const handleSaveModels = () => {
+    const modelUpdates = Object.fromEntries(
+      MODEL_KEYS.map((k) => [k, form[k] ?? ""])
+    );
+    save(modelUpdates, {
+      onSuccess: () => { setModelSaved(true); setTimeout(() => setModelSaved(false), 2000); },
     });
   };
 
@@ -210,13 +222,72 @@ export default function Settings() {
         {flagSaved && <div style={{ marginTop: 10, fontSize: 12, color: "var(--ok)" }}>Saved!</div>}
       </div>
 
+      {/* LLM Models */}
+      <div style={sectionStyle}>
+        <h2 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 600 }}>LLM Models</h2>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--ink3)" }}>
+          Models used for rule extraction and definition inference. Use <code style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>ollama/&lt;model&gt;</code> (e.g.{" "}
+          <code style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>ollama/gemma3</code>) to route through a{" "}
+          <a href="https://github.com/BerriAI/litellm" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>LiteLLM proxy</a>
+          {" "}— requires <code style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>LITELLM_BASE_URL</code> set in the environment.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "var(--ink3)", fontFamily: "var(--font-mono)", marginBottom: 6 }}>
+              simple_model <span style={{ color: "var(--ink4)", fontFamily: "var(--font-sans)" }}>— low-complexity files</span>
+            </label>
+            <input
+              value={form["simple_model"] ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, simple_model: e.target.value }))}
+              placeholder="claude-haiku-4-5"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "var(--ink3)", fontFamily: "var(--font-mono)", marginBottom: 6 }}>
+              complex_model <span style={{ color: "var(--ink4)", fontFamily: "var(--font-sans)" }}>— high-complexity files</span>
+            </label>
+            <input
+              value={form["complex_model"] ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, complex_model: e.target.value }))}
+              placeholder="claude-sonnet-4-5"
+              style={inputStyle}
+            />
+          </div>
+          <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14, marginTop: 2 }}>
+            <label style={{ display: "block", fontSize: 12, color: "var(--ink3)", fontFamily: "var(--font-mono)", marginBottom: 6 }}>
+              litellm_base_url <span style={{ color: "var(--ink4)", fontFamily: "var(--font-sans)" }}>— proxy host (blank = use Anthropic directly)</span>
+            </label>
+            <input
+              value={form["litellm_base_url"] ?? ""}
+              onChange={(e) => setForm((f) => ({ ...f, litellm_base_url: e.target.value }))}
+              placeholder="http://localhost:4000"
+              style={inputStyle}
+            />
+            <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink4)" }}>
+              Run <code style={{ fontFamily: "var(--font-mono)" }}>litellm --model ollama/gemma3 --port 4000</code> to start a local proxy. Cognee also routes through it when set.
+            </div>
+          </div>
+        </div>
+        <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
+          <button
+            onClick={handleSaveModels}
+            style={{ padding: "9px 20px", border: 0, borderRadius: 999, background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "var(--font-sans)" }}
+          >
+            {modelSaved ? "Saved!" : "Save Models"}
+          </button>
+          {modelSaved && <span style={{ fontSize: 12, color: "var(--ok)" }}>Models updated — restart not required.</span>}
+        </div>
+      </div>
+
       {/* Config */}
       <div style={sectionStyle}>
         <h2 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600 }}>System Configuration</h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {Object.entries(form).filter(([key]) =>
             !FEATURE_FLAG_KEYS.includes(key as typeof FEATURE_FLAG_KEYS[number]) &&
-            !SENSITIVE_KEYS.includes(key as typeof SENSITIVE_KEYS[number])
+            !SENSITIVE_KEYS.includes(key as typeof SENSITIVE_KEYS[number]) &&
+            !MODEL_KEYS.includes(key as typeof MODEL_KEYS[number])
           ).map(([key, val]) => (
             <div key={key}>
               <label style={{ display: "block", fontSize: 12, color: "var(--ink3)", fontFamily: "var(--font-mono)", marginBottom: 6 }}>{key}</label>

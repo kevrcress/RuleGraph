@@ -33,7 +33,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     import asyncio
-    await init_cognee()
+    from app.database import async_session_factory
+    async with async_session_factory() as _db:
+        await init_cognee(_db)
     asyncio.create_task(ingest_skills())
     try:
         await _reset_stuck_ingests()

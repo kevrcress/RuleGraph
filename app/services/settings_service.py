@@ -32,6 +32,27 @@ async def get_complexity_threshold(db: AsyncSession) -> float:
         return _settings.complexity_threshold
 
 
+async def get_litellm_base_url(db: AsyncSession) -> str:
+    """Return the LiteLLM proxy base URL: DB first, env var fallback."""
+    from app.config import settings as _settings
+    value = await get_system_setting(db, "litellm_base_url", "")
+    return value or _settings.litellm_base_url
+
+
+async def get_simple_model(db: AsyncSession) -> str:
+    """Return the simple/fast LLM model name: DB first, config fallback."""
+    from app.config import settings as _settings
+    value = await get_system_setting(db, "simple_model", "")
+    return value or _settings.simple_model
+
+
+async def get_complex_model(db: AsyncSession) -> str:
+    """Return the complex/capable LLM model name: DB first, config fallback."""
+    from app.config import settings as _settings
+    value = await get_system_setting(db, "complex_model", "")
+    return value or _settings.complex_model
+
+
 async def get_anthropic_api_key(db: AsyncSession) -> str:
     """Return the Anthropic API key: DB (encrypted) first, env var fallback.
 

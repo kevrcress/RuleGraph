@@ -36,3 +36,6 @@ my_skills/
 
 # Design assets (internal)
 design/
+
+# HVE tracking — internal planning artifacts, excluded from public repo
+.claude-hve-tracking/

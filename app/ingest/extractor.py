@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTENT_CHARS = 32_000
 
-def _get_client(api_key: str) -> anthropic.AsyncAnthropic:
+def _get_client(api_key: str, base_url: str = "") -> anthropic.AsyncAnthropic:
+    effective_url = base_url or settings.litellm_base_url
+    if effective_url:
+        return anthropic.AsyncAnthropic(api_key="litellm", base_url=effective_url)
     return anthropic.AsyncAnthropic(api_key=api_key)
 
 
@@ -194,17 +197,27 @@ async def extract_rules(
         ExtractionResult with extracted rules.
     """
     if db is not None:
-        from app.services.settings_service import is_claude_enabled, get_complexity_threshold, get_anthropic_api_key
+        from app.services.settings_service import (
+            is_claude_enabled, get_complexity_threshold, get_anthropic_api_key,
+            get_simple_model, get_complex_model, get_litellm_base_url,
+        )
         if not await is_claude_enabled(db):
             logger.info("Claude API disabled by admin — skipping LLM extraction")
             return ExtractionResult(rules=[], model_used="disabled", error="Claude API is disabled by admin")
         threshold = await get_complexity_threshold(db)
-        client = _get_client(await get_anthropic_api_key(db))
+        client = _get_client(await get_anthropic_api_key(db), base_url=await get_litellm_base_url(db))
+        simple_model = await get_simple_model(db)
+        complex_model = await get_complex_model(db)
+        # Close the implicit read transaction so it doesn't stay open during the
+        # LLM call. idle_in_transaction_session_timeout (30s) would kill it otherwise.
+        await db.commit()
     else:
         threshold = settings.complexity_threshold
         client = _ensure_legacy_client()
+        simple_model = settings.simple_model
+        complex_model = settings.complex_model
 
-    model = settings.complex_model if complexity >= threshold else settings.simple_model
+    model = complex_model if complexity >= threshold else simple_model
     truncated = _truncate_content(content)
 
     try:
