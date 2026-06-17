@@ -63,10 +63,12 @@ class Rule(Base):
     extraction_confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     graph_quality_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     source_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_file: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cognee_node_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     workitem_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     workitem_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     coverage_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="uncovered")
+    code_behavior: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -114,6 +116,7 @@ class Service(Base):
     )
     name: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     source_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -77,11 +77,18 @@ async def run_lint(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
-    """Re-enrich the graph by re-ingesting all Cognee skills. Admin only."""
+    """Re-enrich the graph: re-ingest skills then re-cognify the dataset. Admin only."""
+    from app.graph.cognee_client import ingest_skills, cognify_graph
+    warnings = []
     try:
-        from app.graph.cognee_client import ingest_skills
         await ingest_skills()
-        return {"message": "Graph re-enrichment complete — skills re-ingested"}
     except Exception as exc:
-        logger.warning("Lint failed (non-fatal): %s", exc)
-        return {"message": "Graph re-enrichment attempted", "warning": str(exc)}
+        warnings.append(f"skill ingestion: {exc}")
+    try:
+        await cognify_graph()
+    except Exception as exc:
+        warnings.append(f"cognify: {exc}")
+    return {
+        "message": "Graph re-enrichment complete",
+        **({"warnings": warnings} if warnings else {}),
+    }

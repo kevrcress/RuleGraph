@@ -17,6 +17,14 @@ engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
+    pool_recycle=300,
+    connect_args={
+        "server_settings": {
+            # Auto-kill any session idle in transaction for >30s.
+            # Prevents a stuck background task from blocking DDL migrations.
+            "idle_in_transaction_session_timeout": "30000",
+        }
+    },
 )
 
 # Session factory
@@ -38,3 +46,7 @@ async def get_db():
             raise
         finally:
             await session.close()
+
+
+# Usable outside of request context (e.g. background tasks)
+async_session_factory = AsyncSessionLocal

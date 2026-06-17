@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TEST_MODE = "--test-mode" in sys.argv
 SEED_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Demo-only credentials — for local development and PoC walkthroughs only.
 DEMO_USERS = {
     "admin": {
         "username": "demo_admin",

@@ -32,10 +32,12 @@ class RuleDetail(BaseModel):
     extraction_confidence: Optional[float] = None
     graph_quality_score: Optional[float] = None
     source_type: Optional[str] = None
+    source_file: Optional[str] = None
     cognee_node_id: Optional[str] = None
     workitem_id: Optional[str] = None
     workitem_url: Optional[str] = None
     coverage_status: Optional[str] = None
+    code_behavior: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     deprecated_at: Optional[datetime] = None

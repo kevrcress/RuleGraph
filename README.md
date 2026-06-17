@@ -134,15 +134,46 @@ npm run dev
 
 Frontend available at **http://localhost:5173**
 
-### 7. Create demo users (optional but useful)
+### 7. Load fixture data (recommended for local testing)
 
 ```bash
-python seeds/demo_users.py
+python3 scripts/seed_fixtures.py
 ```
 
-Creates one user per role: `admin@test.com`, `ba@test.com`, `tl@test.com`, `user@test.com` — all with password `Test1234!`.
+Seeds the database with realistic-looking data across all tables — no Anthropic API calls required. Use this instead of running a real ingest when you just want to test UI or API behavior.
 
-### 8. Ingest some data
+To wipe the database and re-seed from scratch:
+
+```bash
+python3 scripts/seed_fixtures.py --reset
+```
+
+**Seeded login credentials:**
+
+| Email | Password | Role |
+|-------|----------|------|
+| `admin@acme.com` | `admin123` | admin |
+| `sarah@acme.com` | `tech123` | tech_lead |
+| `mark@acme.com` | `biz123` | business_admin |
+| `jane@acme.com` | `user123` | user |
+
+**What gets seeded:** 4 users · 5 services · 15 rules (all 7 statuses) · 6 rule versions · 2 ingest sources · 3 ingest runs · 3 ingest errors · 2 conflicts · 3 terminology inconsistencies · 2 documents · 3 notifications · 5 audit log entries · 4 feedback records · 4 system settings.
+
+### 8. Ingest sample fixture data (cheap — ~$0.01 in API credits)
+
+The `fixtures/sample_repo/` directory contains synthetic Python files designed to exercise conflict detection and terminology normalization with minimal cost. Each file scores < 0.5 complexity, so they route to `claude-haiku-4-5`.
+
+Run each service directory as a separate ingest so RuleGraph builds cross-service graph edges:
+
+```bash
+python scripts/ingest_repo.py --path fixtures/sample_repo/payment   --source payment-service   --login admin@test.com Test1234!
+python scripts/ingest_repo.py --path fixtures/sample_repo/orders     --source orders-service    --login admin@test.com Test1234!
+python scripts/ingest_repo.py --path fixtures/sample_repo/inventory  --source inventory-service --login admin@test.com Test1234!
+```
+
+After all three runs, open the **Conflicts** page — you should see a conflict between `payment-service` (30-day refund window) and `orders-service` (45-day price-adjustment window). Both reference the same domain concept with different values.
+
+### 9. Ingest real data (optional, costs API credits)
 
 ```bash
 # Ingest the included seed file (eShopOnContainers Order.cs)

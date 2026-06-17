@@ -1,83 +1,57 @@
 import { useCallback } from "react";
-import ReactFlow, {
-  Background,
-  Controls,
-  MiniMap,
-  Handle,
-  Position,
-} from "reactflow";
+import ReactFlow, { Background, Controls, MiniMap, Handle, Position } from "reactflow";
 import type { Node, Edge, NodeTypes } from "reactflow";
 import "reactflow/dist/style.css";
 import { useNavigate } from "react-router-dom";
 import type { GraphNode, GraphEdge } from "../../api/graph";
 
-// Custom node: Service
+const STATUS_BORDER: Record<string, string> = {
+  active:       "#4d7a5f",
+  verified:     "#4d7a5f",
+  approved:     "#4d7a5f",
+  drift:        "#b87a2a",
+  needs_update: "#b87a2a",
+  conflict:     "#b1493b",
+  proposed:     "#3a6a8e",
+  under_review: "#3a6a8e",
+  deprecated:   "#aaa9a0",
+};
+
 function ServiceNode({ data }: { data: { label: string } }) {
   return (
-    <div className="px-3 py-2 rounded border-2 border-brass-0 bg-ink-1 text-bone-0 text-xs font-semibold min-w-[120px] text-center shadow">
-      <Handle type="target" position={Position.Top} className="!bg-brass-0" />
-      <div className="text-brass-0 text-[10px] uppercase tracking-wide mb-0.5">Service</div>
+    <div style={{ padding: "8px 14px", borderRadius: 8, border: "2px solid var(--accent)", background: "var(--accent-soft)", color: "var(--accent-deep)", fontSize: 12, fontWeight: 600, minWidth: 120, textAlign: "center" }}>
+      <Handle type="target" position={Position.Top} style={{ background: "var(--accent)" }} />
+      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2, opacity: 0.7 }}>Service</div>
       <div>{data.label}</div>
-      <Handle type="source" position={Position.Bottom} className="!bg-brass-0" />
+      <Handle type="source" position={Position.Bottom} style={{ background: "var(--accent)" }} />
     </div>
   );
 }
 
-// Custom node: Rule
 function RuleNode({ data }: { data: { label: string; status: string } }) {
-  const statusColor: Record<string, string> = {
-    active: "border-green-500",
-    drift: "border-ember",
-    proposed: "border-bone-3",
-    under_review: "border-yellow-500",
-    approved: "border-blue-400",
-    deprecated: "border-bone-4",
-    needs_update: "border-orange-400",
-  };
-  const border = statusColor[data.status] ?? "border-bone-4";
-
+  const border = STATUS_BORDER[data.status] ?? "var(--line)";
   return (
-    <div
-      className={`px-3 py-2 rounded border-2 ${border} bg-ink-2 text-bone-0 text-xs min-w-[140px] max-w-[200px] text-center shadow cursor-pointer hover:bg-ink-1 transition-colors`}
-    >
+    <div style={{ padding: "8px 14px", borderRadius: 8, border: `2px solid ${border}`, background: "var(--panel)", color: "var(--ink)", fontSize: 12, minWidth: 140, maxWidth: 200, textAlign: "center", cursor: "pointer" }}>
       <Handle type="target" position={Position.Top} />
-      <div className="text-bone-3 text-[10px] uppercase tracking-wide mb-0.5">Rule</div>
-      <div className="font-medium leading-snug">{data.label}</div>
-      <div className="text-[10px] mt-1 text-bone-3">{data.status}</div>
+      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink3)", marginBottom: 2 }}>Rule</div>
+      <div style={{ fontWeight: 500, lineHeight: 1.3 }}>{data.label}</div>
+      <div style={{ fontSize: 10, marginTop: 4, color: "var(--ink3)" }}>{data.status}</div>
       <Handle type="source" position={Position.Bottom} />
     </div>
   );
 }
 
-const nodeTypes: NodeTypes = {
-  service: ServiceNode,
-  rule: RuleNode,
-};
+const nodeTypes: NodeTypes = { service: ServiceNode, rule: RuleNode };
 
-interface Props {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-export default function GraphVisualization({ nodes, edges }: Props) {
+export default function GraphVisualization({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) {
   const navigate = useNavigate();
 
-  const rfNodes: Node[] = nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    data: n.data,
-    position: n.position,
-  }));
-
+  const rfNodes: Node[] = nodes.map((n) => ({ id: n.id, type: n.type, data: n.data, position: n.position }));
   const rfEdges: Edge[] = edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label: e.label,
-    type: e.type ?? "default",
-    animated: e.label === "IMPLEMENTS",
-    style: { stroke: "#7a5f1a", strokeWidth: 1.5 },
-    labelStyle: { fontSize: 9, fill: "#7a756e" },
+    id: e.id, source: e.source, target: e.target, label: e.label,
+    type: e.type ?? "default", animated: e.label === "IMPLEMENTS",
+    style: { stroke: "var(--accent)", strokeWidth: 1.5 },
+    labelStyle: { fontSize: 9, fill: "var(--ink3)" },
   }));
 
   const onNodeClick = useCallback(
@@ -89,30 +63,17 @@ export default function GraphVisualization({ nodes, edges }: Props) {
   );
 
   return (
-    <div
-      data-testid="graph-visualization"
-      style={{ width: "100%", height: "600px" }}
-      className="rounded-lg border border-bone-4 bg-ink-1 overflow-hidden"
-    >
+    <div data-testid="graph-visualization" style={{ width: "100%", height: 600 }}>
       <ReactFlow
-        nodes={rfNodes}
-        edges={rfEdges}
-        nodeTypes={nodeTypes}
-        onNodeClick={onNodeClick}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.3}
-        maxZoom={2}
-        attributionPosition="bottom-right"
+        nodes={rfNodes} edges={rfEdges} nodeTypes={nodeTypes}
+        onNodeClick={onNodeClick} fitView fitViewOptions={{ padding: 0.2 }}
+        minZoom={0.3} maxZoom={2} attributionPosition="bottom-right"
       >
-        <Background color="#b0aaa3" gap={16} size={0.5} />
+        <Background color="var(--line)" gap={16} size={0.5} />
         <Controls />
         <MiniMap
-          nodeColor={(n) => {
-            if (n.type === "service") return "#7a5f1a";
-            return "#5a554f";
-          }}
-          maskColor="rgba(240,237,232,0.6)"
+          nodeColor={(n) => n.type === "service" ? "var(--accent)" : "var(--ink3)"}
+          maskColor="rgba(250,248,244,0.6)"
         />
       </ReactFlow>
     </div>

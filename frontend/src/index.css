@@ -3,23 +3,31 @@
 @tailwind utilities;
 
 :root {
-  --ink-0: #fafaf8;
-  --ink-1: #f0ede8;
-  --ink-2: #e4ddd3;
-  --ink-3: #d8d0c5;
-  --ink-4: #ccc4b8;
-  --bone-0: #1c1813;
-  --bone-1: #3a3530;
-  --bone-2: #5a554f;
-  --bone-3: #7a756e;
-  --bone-4: #b0aaa3;
-  --brass-0: #7a5f1a;
-  --brass-1: #5a4512;
-  --brass-2: #3a2d0c;
-  --ember: #c0392b;
-  --serif: "Newsreader", Georgia, serif;
-  --sans: "IBM Plex Sans", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", monospace;
+  --surface:      #faf8f4;
+  --panel:        #ffffff;
+  --panel2:       #f6f3ec;
+  --line:         #ece7dc;
+  --line2:        #f1ede4;
+  --ink:          #1f2421;
+  --ink2:         #4a4d47;
+  --ink3:         #7d7f78;
+  --ink4:         #aaa9a0;
+  --accent:       #4d7a5f;
+  --accent-soft:  #e6efe7;
+  --accent-deep:  #345040;
+  --clay:         #b8704a;
+  --clay-soft:    #f4e6da;
+  --ok:           #4d7a5f;
+  --ok-soft:      #e6efe7;
+  --warn:         #b87a2a;
+  --warn-soft:    #f6e9d4;
+  --danger:       #b1493b;
+  --danger-soft:  #f4dfd9;
+  --info:         #3a6a8e;
+  --info-soft:    #e3edf3;
+  --font-sans:    "Public Sans", "Inter", system-ui, sans-serif;
+  --font-mono:    "Geist Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --radius:       10px;
 }
 
 * {
@@ -28,11 +36,18 @@
 
 body {
   margin: 0;
-  font-family: var(--sans);
-  background: var(--ink-0);
-  color: var(--bone-0);
+  font-family: var(--font-sans);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 #root {
   min-height: 100vh;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }

@@ -22,7 +22,11 @@ class IngestErrorItem(BaseModel):
     file_path: Optional[str] = None
     error_source: Optional[IngestErrorSourceEnum] = None
     error_message: Optional[str] = None
+    stack_trace: Optional[str] = None
+    raw_content: Optional[str] = None
     created_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolution_note: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

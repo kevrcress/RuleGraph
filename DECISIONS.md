@@ -332,3 +332,41 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 **Decision**: `pipeline.process_file()` calls `conflict_service.detect_and_store(db)` and `terminology_service.scan_content_and_update(db, content, service_name)` after every file ingest. Both are wrapped in `try/except` and are non-fatal.
 
 **Reasoning**: Ensures conflicts and terminology are always current after ingestion. The per-call cost is acceptable for Stage 2 (few services). Both operations fail silently to preserve the existing "clean seed = no ingest errors" guarantee for Stage 1 tests.
+
+---
+
+## Post-Stage 7
+
+### DEC-014: `code_behavior` column separates code extraction from human-edited policy
+
+**Context**: `rule.definition` was being overwritten on every re-ingest, so there was no way to compare the human-approved policy definition against what the code currently does.
+
+**Decision**: Added `code_behavior` column (nullable Text). On first ingest, both `definition` and `code_behavior` are set to the LLM extraction. On re-ingest of an existing rule, only `code_behavior` is updated; `definition` is preserved as the policy. When they differ, the rule is marked `drift` and a `RuleVersion` snapshot is created.
+
+**Reasoning**: Enables the Conflicts page to show a genuine policy-vs-code split panel. Cross-service conflicts remain on the same page in a separate section below. Not in spec; driven by user clarification of intent for the two report pages.
+
+---
+
+### DEC-032: fixtures/sample_repo uses 3 separate ingest runs with distinct --source labels
+
+**Date**: 2026-05-21
+**Context**: Added `fixtures/sample_repo/` as cheap, repeatable test data for local development and conflict detection demos.
+
+**Decision**: The ingest sequence uses three separate `ingest_repo.py` calls — one per service directory — each with a distinct `--source` label (`payment-service`, `orders-service`, `inventory-service`). A deliberate contradiction is planted: `payment/refund_processor.py` states a 30-day refund window while `orders/discount.py` states a 45-day price-adjustment window. Both reference the same domain concept (customer refund eligibility) with different values.
+
+**Why 3 runs**: Cross-service graph edges require distinct `--source` labels. Running all three directories in a single ingest would merge all files under one service node, making cross-service conflict detection impossible.
+
+**Why 30 vs 45 days**: Same domain concept, different numbers across services — this is the most reliable trigger for conflict detection. The domain terms ("refund", "window", "days") overlap sufficiently for the LLM to link them.
+
+**Why flat Python**: Keeps complexity score < 0.5 (roughly 0.35–0.40 for ~30-line files with 2–3 branches and ~5 business terms), routing to claude-haiku-4-5 at ~$0.01 total for all three ingest runs.
+
+---
+
+### DEC-031: Ingest derives per-module services from file paths instead of one service per repo
+
+**Date**: 2026-05-21
+**Context**: All rules from a repo ingest were being associated with a single flat service entry (the repo name, e.g. "Medusa"). This made wiki page generation impossible since there was no domain-level grouping — 1,790 rules all belonged to one service with no way to separate "payments" from "orders" from "inventory".
+
+**Decision**: `batch_pipeline.py` now calls `derive_module_from_path(file_path, repo_name)` per file, which strips generic directory segments (`src`, `lib`, `packages`, etc.) and returns the first meaningful directory as the module label (e.g. `Medusa/payments`, `Medusa/orders`). A service record is created per distinct module and cached in-memory for the batch run. `pipeline.py` applies the same logic for single-file uploads that lack an explicit `source_name`.
+
+**Reasoning**: Wiki pages need natural domain groupings to be generated from the knowledge base. Module-level services derived from directory structure is the least-invasive way to get this without a schema change. Existing data is unaffected (no backfill). The heuristic is imperfect but good enough — a `Medusa/src/payments/service.ts` file correctly maps to `Medusa/payments`.

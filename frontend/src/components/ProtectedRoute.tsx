@@ -16,8 +16,8 @@ export default function ProtectedRoute({ children, roles }: Props) {
   if (roles && !roles.includes(user.role)) {
     return (
       <div data-testid="access-denied" className="p-8 text-center">
-        <h2 className="text-xl text-ember mb-2">Access Denied</h2>
-        <p className="text-bone-2">You do not have permission to view this page.</p>
+        <h2 style={{ fontSize: 20, color: "var(--danger)", marginBottom: 8 }}>Access Denied</h2>
+        <p style={{ color: "var(--ink2)" }}>You do not have permission to view this page.</p>
       </div>
     );
   }

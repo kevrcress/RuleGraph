@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
     op.create_table(
         "feedback",
         sa.Column("id", UUID(as_uuid=True), primary_key=True),

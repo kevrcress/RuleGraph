@@ -16,6 +16,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
     # --- Create PostgreSQL enum types FIRST ---
     op.execute("""
         DO $$ BEGIN

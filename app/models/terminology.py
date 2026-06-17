@@ -20,6 +20,9 @@ class TerminologyInconsistency(Base):
     variants: Mapped[List[str]] = mapped_column(ARRAY(Text()), nullable=False)
     services: Mapped[List[str]] = mapped_column(ARRAY(Text()), nullable=False)
     status: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="pending")  # pending|approved|rejected
+    definition: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    definition_confidence: Mapped[Optional[float]] = mapped_column(nullable=True)
+    definition_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # draft|accepted|edited
     detected_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

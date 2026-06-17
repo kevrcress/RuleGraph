@@ -34,7 +34,7 @@ async def init_cognee() -> None:
         logger.warning(f"Cognee initialization failed (graph enrichment will be disabled): {e}")
 
 
-async def add_to_graph(content: str, dataset_name: str = "rulegraph") -> str | None:
+async def add_to_graph(content: str, dataset_name: str = "rulegraph", db=None) -> str | None:
     """
     Add content to knowledge graph. Returns node ID or None on failure.
 
@@ -44,6 +44,11 @@ async def add_to_graph(content: str, dataset_name: str = "rulegraph") -> str | N
     """
     if not _cognee_available:
         return None
+    if db is not None:
+        from app.services.settings_service import is_claude_enabled
+        if not await is_claude_enabled(db):
+            logger.info("Claude API disabled by admin — skipping Cognee graph enrichment")
+            return None
     try:
         await cognee.add(content, dataset_name)
         # cognify may not exist in all versions of cognee 0.1.15
@@ -68,6 +73,21 @@ async def search_graph(query: str) -> list:
     except Exception as e:
         logger.warning(f"Cognee search_graph failed: {e}")
         return []
+
+
+async def cognify_graph(dataset_name: str = "rulegraph") -> None:
+    """
+    Re-process ingested data into a richer knowledge graph structure.
+    Called by /lint to improve graph quality after new data is ingested.
+    """
+    if not _cognee_available:
+        logger.info("Cognee not available — skipping cognify")
+        return
+    try:
+        await cognee.cognify(datasets=dataset_name)
+        logger.info("Cognee cognify complete for dataset '%s'", dataset_name)
+    except Exception as exc:
+        logger.warning("Cognee cognify failed (non-fatal): %s", exc)
 
 
 async def ingest_skills() -> None:

@@ -22,6 +22,9 @@ BUSINESS_LOGIC_KEYWORDS = [
     "cancel", "cancellation", "refund", "credit", "debit", "tax",
     "commission", "penalty", "limit", "threshold", "quota", "constraint",
     "status", "transition", "workflow", "process", "business",
+    # Enum / type declarations that encode domain state
+    "enum", "pending", "active", "inactive", "expired", "suspended",
+    "approved", "rejected", "completed", "failed", "shipped", "delivered",
 ]
 
 

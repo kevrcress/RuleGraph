@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum
-from app.models.rule import Rule, RuleStatusEnum, Service, RuleService
+from app.models.rule import Rule, RuleStatusEnum, Service, RuleService, RuleVersion
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +113,49 @@ async def store_rule(
     source_type: str,
     cognee_node_id: Optional[str] = None,
     service_id: Optional[uuid.UUID] = None,
+    source_file: Optional[str] = None,
 ) -> Rule:
-    """Write an extracted rule to the rules table and optionally associate with a service."""
+    """Upsert a rule by (title, service_id) — update if already ingested, insert if new."""
+    existing: Optional[Rule] = None
+
+    if service_id is not None:
+        result = await db.execute(
+            select(Rule)
+            .join(RuleService, RuleService.rule_id == Rule.id)
+            .where(RuleService.service_id == service_id)
+            .where(Rule.title == title)
+        )
+        existing = result.scalar_one_or_none()
+
+    if existing is not None:
+        existing.code_behavior = definition
+        if existing.definition != definition:
+            # Snapshot the current policy before recording drift
+            version = RuleVersion(
+                id=uuid.uuid4(),
+                rule_id=existing.id,
+                definition=existing.definition,
+                status=existing.status,
+                changed_at=datetime.now(timezone.utc),
+                change_note="auto: code re-ingested, drift detected",
+            )
+            db.add(version)
+            existing.status = RuleStatusEnum.drift
+        existing.extraction_confidence = confidence
+        existing.cognee_node_id = cognee_node_id
+        existing.updated_at = datetime.now(timezone.utc)
+        await db.flush()
+        return existing
+
     rule = Rule(
         id=uuid.uuid4(),
         title=title,
         definition=definition,
+        code_behavior=definition,
         status=RuleStatusEnum.proposed,
         extraction_confidence=confidence,
         source_type=source_type,
+        source_file=source_file,
         cognee_node_id=cognee_node_id,
         coverage_status="uncovered",
     )
@@ -129,8 +163,7 @@ async def store_rule(
     await db.flush()
 
     if service_id is not None:
-        rule_service = RuleService(rule_id=rule.id, service_id=service_id)
-        db.add(rule_service)
+        db.add(RuleService(rule_id=rule.id, service_id=service_id))
         await db.flush()
 
     return rule

@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
     # Add coverage_status to rules
     op.add_column(
         "rules",

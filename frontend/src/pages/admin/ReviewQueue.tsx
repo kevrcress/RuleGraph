@@ -1,47 +1,87 @@
 import { useState } from "react";
-import { useReviewQueue, useApproveRule, useRejectRule } from "../../api/admin";
+import { useReviewQueue, useApproveRule, useRejectRule, useBulkApproveRules } from "../../api/admin";
 import Layout from "../../components/Layout";
 
 export default function ReviewQueue() {
   const { data, isLoading } = useReviewQueue();
   const { mutate: approve } = useApproveRule();
   const { mutate: reject } = useRejectRule();
+  const bulkApprove = useBulkApproveRules();
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState("");
+  const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
   return (
     <Layout>
-      <div data-testid="review-queue" className="max-w-4xl">
-        <h1 className="text-xl font-serif text-bone-0 mb-4">Review Queue</h1>
-        {isLoading && <div className="text-bone-3 text-sm">Loading…</div>}
-
+      <div data-testid="review-queue" style={{ maxWidth: 800 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.022em" }}>Review Queue</h1>
+          {data?.items?.length > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {bulkFeedback && (
+                <span style={{ fontSize: 12, color: "var(--ok)", fontWeight: 600 }}>{bulkFeedback}</span>
+              )}
+              <button
+                onClick={() =>
+                  bulkApprove.mutate("all", {
+                    onSuccess: (res) => {
+                      setBulkFeedback(`${res.approved} rule${res.approved !== 1 ? "s" : ""} approved`);
+                      setTimeout(() => setBulkFeedback(null), 3000);
+                    },
+                  })
+                }
+                disabled={bulkApprove.isPending}
+                style={{
+                  padding: "8px 16px", border: "1px solid var(--ok)",
+                  background: "var(--ok-soft)", color: "var(--ok)",
+                  borderRadius: 999, fontSize: 13, fontWeight: 600,
+                  cursor: "pointer", fontFamily: "var(--font-sans)",
+                  opacity: bulkApprove.isPending ? 0.6 : 1,
+                }}
+              >
+                Approve all ({data.items.length})
+              </button>
+            </div>
+          )}
+        </div>
+        {isLoading && <div style={{ color: "var(--ink3)", fontSize: 13 }}>Loading…</div>}
         {data?.items?.length === 0 && !isLoading && (
-          <p className="text-bone-3 text-sm">No rules pending review.</p>
+          <p style={{ color: "var(--ink3)", fontSize: 13 }}>No rules pending review.</p>
         )}
 
-        <ul className="space-y-3">
-          {data?.items?.map((rule: { id: string; title: string; definition?: string; status: string; created_at: string }) => (
-            <li key={rule.id} className="bg-ink-2 border border-bone-4 rounded-lg p-4">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <h3 className="text-bone-0 font-medium">{rule.title}</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {data?.items?.map((rule: any) => (
+            <div key={rule.id} style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 10, padding: "18px 20px" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>{rule.title}</h3>
                   {rule.definition && (
-                    <p className="text-sm text-bone-2 mt-1 line-clamp-2">{rule.definition}</p>
+                    <p style={{ margin: "6px 0 0", fontSize: 13, color: "var(--ink2)", lineHeight: 1.5 }}>
+                      {rule.definition.slice(0, 200)}{rule.definition.length > 200 ? "…" : ""}
+                    </p>
                   )}
-                  <p className="text-xs text-bone-3 mt-1">
+                  <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--ink3)" }}>
                     Proposed {new Date(rule.created_at).toLocaleDateString()}
                   </p>
                 </div>
-                <div className="flex gap-2 ml-4">
+                <div style={{ display: "flex", gap: 8, marginLeft: 16 }}>
                   <button
                     onClick={() => approve(rule.id)}
-                    className="px-3 py-1 text-xs bg-green-800 text-green-200 rounded hover:bg-green-700"
+                    style={{
+                      padding: "7px 14px", border: 0, borderRadius: 999,
+                      background: "var(--accent)", color: "#fff",
+                      fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "var(--font-sans)",
+                    }}
                   >
                     Approve
                   </button>
                   <button
                     onClick={() => setRejecting(rule.id)}
-                    className="px-3 py-1 text-xs bg-ember/20 text-ember rounded hover:bg-ember/30"
+                    style={{
+                      padding: "7px 14px", border: "1px solid var(--danger)",
+                      borderRadius: 999, background: "var(--danger-soft)",
+                      color: "var(--danger)", fontSize: 13, cursor: "pointer", fontFamily: "var(--font-sans)",
+                    }}
                   >
                     Reject
                   </button>
@@ -49,34 +89,34 @@ export default function ReviewQueue() {
               </div>
 
               {rejecting === rule.id && (
-                <div className="mt-3 flex gap-2">
+                <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
                   <input
                     value={rejectNote}
                     onChange={(e) => setRejectNote(e.target.value)}
                     placeholder="Rejection reason…"
-                    className="flex-1 bg-ink-3 border border-bone-4 rounded px-2 py-1 text-xs text-bone-0 focus:outline-none"
+                    style={{
+                      flex: 1, padding: "8px 12px", border: "1px solid var(--line)",
+                      borderRadius: 8, fontSize: 13, fontFamily: "var(--font-sans)",
+                      background: "var(--panel)", color: "var(--ink)", outline: "none",
+                    }}
                   />
                   <button
-                    onClick={() => {
-                      reject({ ruleId: rule.id, note: rejectNote });
-                      setRejecting(null);
-                      setRejectNote("");
-                    }}
-                    className="px-2 py-1 text-xs bg-ember text-white rounded"
+                    onClick={() => { reject({ ruleId: rule.id, note: rejectNote }); setRejecting(null); setRejectNote(""); }}
+                    style={{ padding: "7px 14px", border: 0, borderRadius: 999, background: "var(--danger)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "var(--font-sans)" }}
                   >
                     Confirm
                   </button>
                   <button
                     onClick={() => setRejecting(null)}
-                    className="px-2 py-1 text-xs text-bone-3"
+                    style={{ padding: "7px 14px", border: "1px solid var(--line)", borderRadius: 999, background: "var(--panel)", color: "var(--ink2)", fontSize: 13, cursor: "pointer", fontFamily: "var(--font-sans)" }}
                   >
                     Cancel
                   </button>
                 </div>
               )}
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
       </div>
     </Layout>
   );

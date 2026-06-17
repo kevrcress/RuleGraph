@@ -20,7 +20,10 @@ import Settings from "./pages/admin/Settings";
 import UserSettings from "./pages/settings/UserSettings";
 import Chat from "./pages/chat/Chat";
 import WikiPromotion from "./pages/admin/WikiPromotion";
+import WikiBrowser from "./pages/wiki/WikiBrowser";
+import WikiEntry from "./pages/wiki/WikiEntry";
 import GraphPage from "./pages/graph/GraphPage";
+import Sources from "./pages/admin/Sources";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -177,6 +180,32 @@ export default function App() {
             element={
               <ProtectedRoute roles={["admin"]}>
                 <Settings />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/sources"
+            element={
+              <ProtectedRoute roles={["admin"]}>
+                <Sources />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Wiki */}
+          <Route
+            path="/wiki"
+            element={
+              <ProtectedRoute>
+                <WikiBrowser />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/wiki/:id"
+            element={
+              <ProtectedRoute>
+                <WikiEntry />
               </ProtectedRoute>
             }
           />

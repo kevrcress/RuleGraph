@@ -15,8 +15,8 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = Field(..., description="Redis connection URL (redis://...)")
 
-    # LLM
-    anthropic_api_key: str = Field(..., description="Anthropic API key for LLM calls")
+    # LLM — optional at startup; can be set via Admin → Settings instead
+    anthropic_api_key: str = Field(default="", description="Anthropic API key (can be set via admin UI instead)")
 
     # Security
     jwt_secret_key: str = Field(..., description="Secret key for JWT token signing")

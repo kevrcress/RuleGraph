@@ -3,12 +3,19 @@ Admin router — user management, review queue, TL dashboard, audit log,
 ingest errors, system settings, and synonym management.
 All endpoints require JWT auth and appropriate roles.
 """
+import io
+import json
 import logging
 import uuid
-from datetime import datetime
+import zipfile
+from datetime import datetime, timezone
+from decimal import Decimal
+from enum import Enum as PyEnum
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +37,53 @@ import bcrypt as _bcrypt
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Export / import helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Parents before children so ON CONFLICT DO NOTHING works without FK errors.
+_EXPORT_TABLES = [
+    "ingest_sources",
+    "ingest_runs",
+    "services",
+    "documents",
+    "rules",
+    "ingest_errors",
+    "terminology_inconsistencies",
+    "rule_versions",
+    "rule_services",
+    "rule_documents",
+    "conflicts",
+    "notifications",
+    "subscriptions",
+    "feedback",
+    "wiki_pages",
+]
+
+# Join tables have composite PKs; all others use (id).
+_CONFLICT_TARGET: dict[str, str] = {
+    "rule_services": "(rule_id, service_id)",
+    "rule_documents": "(rule_id, document_id)",
+}
+
+
+def _serialize_value(v):
+    if v is None:
+        return None
+    if isinstance(v, uuid.UUID):
+        return str(v)
+    if isinstance(v, datetime):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, PyEnum):
+        return v.value
+    return v
+
+
+def _serialize_row(row: dict) -> dict:
+    return {k: _serialize_value(v) for k, v in row.items()}
 
 
 def _hash_pw(password: str) -> str:
@@ -253,6 +307,50 @@ async def reject_rule(
     return RuleDetail.model_validate(rule).model_dump()
 
 
+from pydantic import BaseModel as _AdminBM
+
+
+class BulkApproveRequest(_AdminBM):
+    rule_ids: list[str]  # list of rule UUIDs, or ["all"] to approve all proposed
+
+
+@router.post("/review-queue/bulk-approve")
+async def bulk_approve_rules(
+    body: BulkApproveRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("business_admin", "admin")),
+):
+    """Approve multiple proposed rules in one call. Pass ["all"] to approve every proposed rule."""
+    approver_id = uuid.UUID(current_user["sub"])
+
+    if body.rule_ids == ["all"]:
+        result = await db.execute(
+            select(Rule).where(Rule.status == RuleStatusEnum.proposed)
+        )
+        rules = result.scalars().all()
+        target_ids = [r.id for r in rules]
+    else:
+        try:
+            target_ids = [uuid.UUID(rid) for rid in body.rule_ids]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid rule ID: {exc}")
+        result = await db.execute(
+            select(Rule).where(Rule.id.in_(target_ids), Rule.status == RuleStatusEnum.proposed)
+        )
+        rules = result.scalars().all()
+        target_ids = [r.id for r in rules]
+
+    approved = 0
+    for rid in target_ids:
+        try:
+            await rule_service.approve_rule(db, rid, approver_id)
+            approved += 1
+        except (ValueError, Exception):
+            pass
+
+    return {"approved": approved, "message": f"{approved} rule(s) approved"}
+
+
 @router.put("/review-queue/{rule_id}/deprecate")
 async def deprecate_rule(
     rule_id: uuid.UUID,
@@ -356,13 +454,25 @@ async def flag_no_code(
 # System settings (Admin only)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Keys that are stored encrypted and must never be returned in plaintext.
+_SENSITIVE_SETTING_KEYS = {"anthropic_api_key"}
+_MASKED = "***SET***"
+
+
 @router.get("/settings")
 async def get_settings(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
     settings_result = await db.execute(select(SystemSetting).order_by(SystemSetting.key))
-    return {"settings": {s.key: s.value for s in settings_result.scalars().all()}}
+    out: dict[str, str] = {}
+    for s in settings_result.scalars().all():
+        # Never return sensitive keys in plaintext — only signal whether they're set.
+        if s.key in _SENSITIVE_SETTING_KEYS:
+            out[s.key] = _MASKED
+        else:
+            out[s.key] = s.value
+    return {"settings": out}
 
 
 @router.put("/settings")
@@ -371,15 +481,29 @@ async def update_settings(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
+    from app.security.encryption import encrypt_secret
+
     actor_id = uuid.UUID(current_user["sub"])
+    audit_detail: dict = {}
     for key, value in updates.items():
+        str_value = str(value)
+        # Encrypt sensitive keys before storing; skip if caller sent the mask back unchanged.
+        if key in _SENSITIVE_SETTING_KEYS:
+            if str_value == _MASKED or not str_value:
+                continue  # no change — caller echoed the placeholder back
+            str_value = encrypt_secret(str_value)
+            audit_detail[key] = _MASKED  # never log the plaintext key
+        else:
+            audit_detail[key] = str_value
+
         existing = (await db.execute(select(SystemSetting).where(SystemSetting.key == key))).scalar_one_or_none()
         if existing:
-            existing.value = str(value)
+            existing.value = str_value
             existing.updated_by = actor_id
         else:
-            db.add(SystemSetting(key=key, value=str(value), updated_by=actor_id))
-    await write_audit(db, "admin.settings_changed", user_id=actor_id, detail=updates)
+            db.add(SystemSetting(key=key, value=str_value, updated_by=actor_id))
+
+    await write_audit(db, "admin.settings_changed", user_id=actor_id, detail=audit_detail)
     await db.commit()
     return {"status": "updated"}
 
@@ -406,6 +530,9 @@ async def list_synonyms(
                 "variants": t.variants,
                 "services": t.services,
                 "status": t.status,
+                "definition": t.definition,
+                "definition_confidence": t.definition_confidence,
+                "definition_status": t.definition_status,
                 "detected_at": t.detected_at.isoformat() if t.detected_at else None,
                 "created_at": t.created_at.isoformat() if t.created_at else None,
             }
@@ -478,7 +605,9 @@ async def clear_all_data(
     from app.models.terminology import TerminologyInconsistency
     from app.models.feedback import Feedback
     from app.models.ingest import IngestRun, IngestError
+    from app.models.ingest_source import IngestSource
     from app.models.notification import Notification, Subscription
+    from app.models.wiki import WikiPage
 
     async def _count(model) -> int:
         result = await db.execute(select(func.count()).select_from(model))
@@ -496,13 +625,14 @@ async def clear_all_data(
         "ingest_errors": await _count(IngestError),
         "notifications": await _count(Notification),
         "subscriptions": await _count(Subscription),
+        "wiki_pages": await _count(WikiPage),
     }
     total = sum(counts.values())
 
     if not confirm:
         return {
             "status": "preview",
-            "message": "Add ?confirm=true to actually delete. Users, audit log, and settings are preserved.",
+            "message": "Add ?confirm=true to actually delete. Users, audit log, settings, and ingest sources are preserved.",
             "would_delete": counts,
             "total_rows": total,
         }
@@ -519,6 +649,7 @@ async def clear_all_data(
     await db.execute(text("DELETE FROM documents"))
     await db.execute(text("DELETE FROM conflicts"))
     await db.execute(text("DELETE FROM terminology_inconsistencies"))
+    await db.execute(text("DELETE FROM wiki_pages"))
     await db.execute(text("DELETE FROM ingest_errors"))
     await db.execute(text("DELETE FROM ingest_runs"))
 
@@ -534,4 +665,118 @@ async def clear_all_data(
         "message": "All graph data deleted. Users, audit log, and settings preserved.",
         "deleted": counts,
         "total_rows": total,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Snapshot export / import
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/export")
+async def export_snapshot(
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Download a ZIP snapshot of all graph data + uploaded files."""
+    from sqlalchemy import text
+
+    data: dict = {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "version": "1",
+        "tables": {},
+    }
+    for table in _EXPORT_TABLES:
+        result = await db.execute(text(f"SELECT * FROM {table}"))
+        data["tables"][table] = [_serialize_row(dict(r)) for r in result.mappings().all()]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("data.json", json.dumps(data, indent=2, default=str))
+        for doc in data["tables"].get("documents", []):
+            sp = doc.get("storage_path")
+            if sp:
+                p = Path(sp)
+                if p.exists():
+                    zf.write(p, f"uploads/{p.name}")
+    buf.seek(0)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"rulegraph_export_{ts}.zip"
+
+    await write_audit(
+        db, "admin.data_exported",
+        user_id=uuid.UUID(current_user["sub"]),
+        detail={"row_counts": {t: len(data["tables"].get(t, [])) for t in _EXPORT_TABLES}},
+    )
+    await db.commit()
+
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/import")
+async def import_snapshot(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Restore graph data from a ZIP snapshot (skips rows that already exist)."""
+    from sqlalchemy import text
+
+    content = await file.read()
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(content))
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file")
+
+    if "data.json" not in zf.namelist():
+        raise HTTPException(status_code=400, detail="Missing data.json in archive")
+
+    data = json.loads(zf.read("data.json"))
+    if data.get("version") != "1":
+        raise HTTPException(status_code=400, detail=f"Unsupported export version: {data.get('version')}")
+
+    # Restore uploaded files (skip files already present)
+    upload_dir = Path("uploads")
+    upload_dir.mkdir(exist_ok=True)
+    for name in zf.namelist():
+        if name.startswith("uploads/") and not name.endswith("/"):
+            dest = upload_dir / Path(name).name
+            if not dest.exists():
+                dest.write_bytes(zf.read(name))
+
+    # Insert rows; skip duplicates via ON CONFLICT DO NOTHING
+    counts: dict[str, int] = {}
+    for table in _EXPORT_TABLES:
+        rows = data["tables"].get(table, [])
+        inserted = 0
+        conflict = _CONFLICT_TARGET.get(table, "(id)")
+        for row in rows:
+            if not row:
+                continue
+            # Prefix params to avoid collisions with SQL keywords
+            params = {f"p_{k}": v for k, v in row.items()}
+            cols = ", ".join(row.keys())
+            placeholders = ", ".join(f":p_{k}" for k in row.keys())
+            result = await db.execute(
+                text(f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) ON CONFLICT {conflict} DO NOTHING"),
+                params,
+            )
+            inserted += result.rowcount
+        counts[table] = inserted
+
+    await write_audit(
+        db, "admin.data_imported",
+        user_id=uuid.UUID(current_user["sub"]),
+        detail={"tables": counts},
+    )
+    await db.commit()
+
+    return {
+        "status": "imported",
+        "tables": counts,
+        "total_rows": sum(counts.values()),
     }

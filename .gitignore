@@ -1,4 +1,7 @@
 .env
+.env.local
+.env.*.local
+
 __pycache__/
 *.pyc
 *.pyo
@@ -11,3 +14,25 @@ build/
 uploads/
 *.log
 .cognee/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env_/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Node
+node_modules/
+
+# Claude Code internal files (settings, worktrees, nested .env with secrets)
+.claude/
+
+# Internal Claude skills (not for public)
+my_skills/
+
+# Design assets (internal)
+design/

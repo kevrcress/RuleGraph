@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ingest.complexity import score_complexity
 from app.ingest.extractor import extract_rules
 from app.graph.cognee_client import add_to_graph
+from app.ingest.batch_pipeline import derive_module_from_path
 from app.services import ingest_service
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,12 @@ async def process_file(
         IngestResult with rules_extracted count and any errors.
     """
     result = IngestResult()
-    effective_source = source_name or "file_upload"
+    # For single-file uploads with no explicit label, derive a module from the
+    # path so rules get meaningful service groupings (same logic as batch ingest).
+    if source_name and source_name != "file_upload":
+        effective_source = source_name
+    else:
+        effective_source = derive_module_from_path(filename, source_name or "file_upload")
 
     # Start ingest run tracking
     run = await ingest_service.start_run(db, effective_source)
@@ -66,10 +72,20 @@ async def process_file(
         complexity = score_complexity(content)
         logger.info(f"File '{filename}' complexity score: {complexity:.3f}")
 
+        if complexity == 0.0:
+            logger.info(f"Skipping '{filename}' — complexity 0.0, no business logic detected")
+            await ingest_service.complete_run(
+                db, run.id, "completed",
+                files_processed=0, files_errored=0,
+                last_processed_file=filename,
+            )
+            await db.commit()
+            return result
+
         # --- Step 2 & 3: Extract business rules via LLM with retry ---
         extraction_result_holder, extraction_error = await ingest_service.with_retry(
             "llm_extraction",
-            lambda: extract_rules(content, complexity),
+            lambda: extract_rules(content, complexity, db=db),
         )
 
         if extraction_error or extraction_result_holder is None:
@@ -125,12 +141,17 @@ async def process_file(
         )
 
         # --- Step 4: Add to Cognee (best-effort) ---
-        cognee_node_id = await add_to_graph(content, dataset_name="rulegraph")
+        cognee_node_id = await add_to_graph(content, dataset_name="rulegraph", db=db)
         if cognee_node_id is None:
             logger.info(f"Cognee graph enrichment skipped/failed for '{filename}' (non-fatal)")
 
         # --- Step 5: Get or create the service record ---
         service = await ingest_service.get_or_create_service(db, effective_source)
+        if extraction_result.summary:
+            if service.summary:
+                service.summary = service.summary + "\n\n" + extraction_result.summary
+            else:
+                service.summary = extraction_result.summary
         await db.flush()
 
         # --- Step 6: Store each rule in Postgres with service association ---
@@ -144,6 +165,7 @@ async def process_file(
                     source_type="code" if effective_source != "file_upload" else "file_upload",
                     cognee_node_id=cognee_node_id,
                     service_id=service.id,
+                    source_file=filename,
                 )
                 result.rules_extracted += 1
             except Exception as store_exc:

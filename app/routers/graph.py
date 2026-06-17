@@ -27,7 +27,7 @@ async def get_graph(
     rules = rules_result.scalars().all()
 
     links_result = await db.execute(select(RuleService))
-    links = links_result.all()
+    links = links_result.scalars().all()
 
     nodes = []
 
@@ -48,7 +48,7 @@ async def get_graph(
             "data": {
                 "label": rule.title,
                 "nodeType": "rule",
-                "status": rule.status.value,
+                "status": rule.status.value if rule.status else "proposed",
                 "ruleId": str(rule.id),
             },
             "position": {"x": 280 * (i % 4), "y": 250 + (i // 4) * 160},

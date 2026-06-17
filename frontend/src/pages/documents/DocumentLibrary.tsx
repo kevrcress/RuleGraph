@@ -7,14 +7,19 @@ const MAX_SIZE_MB = 25;
 
 function validateFile(file: File): string | null {
   const ext = "." + file.name.split(".").pop()?.toLowerCase();
-  if (!ALLOWED_EXTS.includes(ext)) {
+  if (!ALLOWED_EXTS.includes(ext))
     return `File type ${ext} is not allowed. Allowed: ${ALLOWED_EXTS.join(", ")}`;
-  }
-  if (file.size > MAX_SIZE_MB * 1024 * 1024) {
+  if (file.size > MAX_SIZE_MB * 1024 * 1024)
     return `File exceeds ${MAX_SIZE_MB}MB limit.`;
-  }
   return null;
 }
+
+const STATUS_COLORS: Record<string, string> = {
+  ready:      "var(--ok)",
+  processing: "var(--warn)",
+  error:      "var(--danger)",
+  pending:    "var(--info)",
+};
 
 export default function DocumentLibrary() {
   const { data, isLoading } = useDocuments();
@@ -30,11 +35,7 @@ export default function DocumentLibrary() {
     setUploadSuccess("");
 
     const err = validateFile(file);
-    if (err) {
-      setUploadError(err);
-      e.target.value = "";
-      return;
-    }
+    if (err) { setUploadError(err); e.target.value = ""; return; }
 
     upload(file, {
       onSuccess: () => {
@@ -50,55 +51,63 @@ export default function DocumentLibrary() {
 
   return (
     <Layout>
-      <div data-testid="document-library" className="max-w-4xl">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-xl font-serif text-bone-0">Document Library</h1>
+      <div data-testid="document-library" style={{ maxWidth: 800 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 24 }}>
+          <h1 style={{ margin: 0, fontSize: 28, fontWeight: 600, letterSpacing: "-0.022em" }}>Documents</h1>
         </div>
 
-        <div className="bg-ink-2 border border-bone-4 rounded-lg p-4 mb-6">
-          <h3 className="text-sm font-semibold text-bone-2 mb-3">Upload Document</h3>
+        {/* Upload card */}
+        <div style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 10, padding: 20, marginBottom: 20 }}>
+          <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>Upload Document</h3>
           <input
             ref={fileRef}
             type="file"
             accept=".pdf,.docx,.txt,.md,.eml,.msg"
             onChange={handleFileChange}
             disabled={uploading}
-            className="block text-sm text-bone-2 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-brass-0 file:text-ink-0 file:cursor-pointer hover:file:bg-brass-1"
+            style={{ display: "block", fontSize: 13, color: "var(--ink2)", marginBottom: 8 }}
           />
-          <p className="text-xs text-bone-3 mt-2">
-            Allowed: PDF, DOCX, TXT, MD, EML, MSG. Max {MAX_SIZE_MB}MB.
+          <p style={{ fontSize: 12, color: "var(--ink3)", margin: 0 }}>
+            PDF, DOCX, TXT, MD, EML, MSG — max {MAX_SIZE_MB}MB
           </p>
-          {uploadError && (
-            <p className="text-ember text-sm mt-2">{uploadError}</p>
-          )}
-          {uploadSuccess && (
-            <p className="text-green-400 text-sm mt-2">{uploadSuccess}</p>
-          )}
+          {uploadError && <p style={{ color: "var(--danger)", fontSize: 13, marginTop: 8 }}>{uploadError}</p>}
+          {uploadSuccess && <p style={{ color: "var(--ok)", fontSize: 13, marginTop: 8 }}>{uploadSuccess}</p>}
         </div>
 
-        {isLoading && <div className="text-bone-3 text-sm">Loading documents…</div>}
+        {isLoading && <div style={{ color: "var(--ink3)", fontSize: 13 }}>Loading documents…</div>}
 
-        <ul className="space-y-2">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {data?.items.map((doc) => (
-            <li
+            <div
               key={doc.id}
-              className="bg-ink-2 border border-bone-4 rounded-lg p-4 flex items-center justify-between"
+              style={{
+                background: "var(--panel)", border: "1px solid var(--line)",
+                borderRadius: 10, padding: "14px 18px",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+              }}
             >
               <div>
-                <p className="text-bone-0 text-sm font-medium">{doc.filename}</p>
-                <p className="text-xs text-bone-3 mt-0.5">
-                  {doc.content_type} · {Math.round(doc.size_bytes / 1024)}KB · {doc.status}
+                <p style={{ margin: 0, fontSize: 14, fontWeight: 500, color: "var(--ink)" }}>{doc.filename}</p>
+                <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--ink3)" }}>
+                  {doc.content_type} · {Math.round(doc.size_bytes / 1024)}KB
                 </p>
               </div>
-              <span className="text-xs text-bone-4">
-                {new Date(doc.created_at).toLocaleDateString()}
-              </span>
-            </li>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ fontSize: 12, color: STATUS_COLORS[doc.status] ?? "var(--ink3)", fontWeight: 500 }}>
+                  {doc.status}
+                </span>
+                <span style={{ fontSize: 12, color: "var(--ink4)" }}>
+                  {new Date(doc.created_at).toLocaleDateString()}
+                </span>
+              </div>
+            </div>
           ))}
           {data?.items.length === 0 && !isLoading && (
-            <li className="text-bone-3 text-sm py-4 text-center">No documents uploaded yet.</li>
+            <div style={{ color: "var(--ink3)", fontSize: 13, textAlign: "center", padding: 32 }}>
+              No documents uploaded yet.
+            </div>
           )}
-        </ul>
+        </div>
       </div>
     </Layout>
   );

@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useCreateRule } from "../../api/rules";
 import Layout from "../../components/Layout";
 import WikiEditor from "../../components/WikiEditor";
@@ -10,22 +10,25 @@ export default function NewRule() {
   const handleSubmit = (data: { title: string; definition: string }) => {
     mutate(
       { ...data, source_type: "manual" },
-      {
-        onSuccess: (rule) => navigate(`/rules/${rule.id}`),
-      }
+      { onSuccess: (rule) => navigate(`/rules/${rule.id}`) }
     );
   };
 
   return (
     <Layout>
-      <div className="max-w-2xl">
-        <div className="mb-6">
-          <h1 className="text-xl font-serif text-bone-0">Propose New Rule</h1>
-          <p className="text-sm text-bone-3 mt-1">
-            Define a business rule. It will be sent to the review queue.
-          </p>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ fontSize: 12, color: "var(--ink3)", marginBottom: 10 }}>
+          <Link to="/rules" style={{ color: "var(--ink3)", textDecoration: "none" }}>Rules</Link>
+          {" · Propose"}
         </div>
-        <div className="bg-ink-2 border border-bone-4 rounded-lg p-6">
+        <h1 style={{ margin: "0 0 6px", fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em" }}>
+          Propose a new rule
+        </h1>
+        <p style={{ color: "var(--ink2)", fontSize: 14, marginBottom: 28 }}>
+          Drafted rules go to a Business Admin for review before being added to the catalog.
+        </p>
+
+        <div style={{ background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 12, padding: 24 }}>
           <WikiEditor onSubmit={handleSubmit} loading={isPending} />
         </div>
       </div>

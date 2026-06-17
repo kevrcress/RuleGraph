@@ -24,6 +24,22 @@ export const useApproveRule = () => {
   });
 };
 
+export const useBulkApproveRules = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ruleIds: string[] | "all") => {
+      const res = await apiClient.post("/admin/review-queue/bulk-approve", {
+        rule_ids: ruleIds === "all" ? ["all"] : ruleIds,
+      });
+      return res.data as { approved: number; message: string };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["review-queue"] });
+      qc.invalidateQueries({ queryKey: ["rules"] });
+    },
+  });
+};
+
 export const useRejectRule = () => {
   const qc = useQueryClient();
   return useMutation({
@@ -114,14 +130,65 @@ export const useCoverage = (page = 1) =>
     },
   });
 
-export const useTerminology = (page = 1) =>
+export const useTerminology = (page = 1, issuesOnly = false) =>
   useQuery({
-    queryKey: ["terminology", page],
+    queryKey: ["terminology", page, issuesOnly],
     queryFn: async () => {
-      const res = await apiClient.get("/terminology", { params: { page } });
+      const res = await apiClient.get("/terminology", {
+        params: { page, issues_only: issuesOnly },
+      });
       return res.data;
     },
   });
+
+export const useRescanTerminology = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post("/terminology/rescan");
+      return res.data as {
+        services_scanned: number;
+        terms_before: number;
+        terms_after: number;
+        terms_added: number;
+      };
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["terminology"] }),
+  });
+};
+
+export const useInferDefinition = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (termId: string) => {
+      const res = await apiClient.post(`/terminology/${termId}/infer`);
+      return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["terminology"] }),
+  });
+};
+
+export const useUpdateDefinition = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      termId,
+      definition,
+      definition_status,
+    }: {
+      termId: string;
+      definition?: string;
+      definition_status?: string;
+    }) => {
+      const res = await apiClient.patch(`/terminology/${termId}`, {
+        definition,
+        definition_status,
+      });
+      return res.data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["terminology"] }),
+  });
+};
 
 export const useClearData = () => {
   const qc = useQueryClient();
@@ -137,5 +204,59 @@ export const useClearData = () => {
         qc.invalidateQueries();
       }
     },
+  });
+};
+
+export const useExportSnapshot = () =>
+  useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.get("/admin/export", { responseType: "blob" });
+      const cd = res.headers["content-disposition"] as string | undefined;
+      const filename = cd?.match(/filename="(.+)"/)?.[1] ?? "rulegraph_export.zip";
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
+
+export const useRunImprove = () =>
+  useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post("/improve");
+      return res.data as { rules_updated: number; message: string };
+    },
+  });
+
+export const useRunLint = () =>
+  useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post("/lint");
+      return res.data as { message: string; warnings?: string[] };
+    },
+  });
+
+export const useRegenerateWiki = () =>
+  useMutation({
+    mutationFn: async () => {
+      const res = await apiClient.post("/wiki/regenerate");
+      return res.data as { status: string; message: string };
+    },
+  });
+
+export const useImportSnapshot = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await apiClient.post("/admin/import", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      return res.data as { status: string; total_rows: number; tables: Record<string, number> };
+    },
+    onSuccess: () => qc.invalidateQueries(),
   });
 };

@@ -1,18 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuthStore } from "../../store/authStore";
 
-interface Assist {
-  type: string;
-  message: string;
-  severity: string;
-}
-
-interface Props {
-  onSubmit: (data: { title: string; definition: string }) => void;
-  loading?: boolean;
-}
+interface Assist { type: string; message: string; severity: string }
+interface Props { onSubmit: (data: { title: string; definition: string }) => void; loading?: boolean }
 
 const ROLES_WITH_MARKDOWN = ["tech_lead", "admin"];
+
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "10px 12px",
+  border: "1px solid var(--line)", borderRadius: 8,
+  fontSize: 14, fontFamily: "var(--font-sans)",
+  background: "var(--panel)", color: "var(--ink)", outline: "none",
+};
 
 export default function WikiEditor({ onSubmit, loading }: Props) {
   const { user } = useAuthStore();
@@ -24,32 +23,20 @@ export default function WikiEditor({ onSubmit, loading }: Props) {
   const hasMarkdown = user && ROLES_WITH_MARKDOWN.includes(user.role);
 
   useEffect(() => {
-    if (!title && !definition) {
-      setShowAssist(false);
-      setAssists([]);
-      return;
-    }
+    if (!title && !definition) { setShowAssist(false); setAssists([]); return; }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setShowAssist(true);
-      // Build simple local checks
       const localAssists: Assist[] = [];
-      if (title.length > 3) {
-        if (/\d/.test(title)) {
-          localAssists.push({ type: "naming", message: "Rule titles typically avoid numbers. Consider a descriptive name.", severity: "info" });
-        }
-        if (title.toLowerCase().includes("order cancellation")) {
-          localAssists.push({ type: "similarity", message: "A similar rule 'Order Cancellation Window' already exists. Review before creating a duplicate.", severity: "warning" });
-        }
-      }
-      if (!definition && title.length > 3) {
+      if (title.length > 3 && /\d/.test(title))
+        localAssists.push({ type: "naming", message: "Rule titles typically avoid numbers. Consider a descriptive name.", severity: "info" });
+      if (title.toLowerCase().includes("order cancellation"))
+        localAssists.push({ type: "similarity", message: "A similar rule 'Order Cancellation Window' already exists. Review before creating a duplicate.", severity: "warning" });
+      if (!definition && title.length > 3)
         localAssists.push({ type: "completeness", message: "A definition is recommended to make this rule actionable.", severity: "info" });
-      }
       setAssists(localAssists);
     }, 700);
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    };
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [title, definition]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -59,26 +46,22 @@ export default function WikiEditor({ onSubmit, loading }: Props) {
   };
 
   return (
-    <form
-      data-testid="wiki-editor"
-      onSubmit={handleSubmit}
-      className="space-y-4"
-    >
+    <form data-testid="wiki-editor" onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div>
-        <label className="block text-sm text-bone-2 mb-1">Rule Title</label>
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>Rule Title</label>
         <input
           data-testid="rule-title"
           name="title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="e.g. Late Fee Grace Period"
-          className="w-full bg-ink-3 border border-bone-4 rounded px-3 py-2 text-bone-0 placeholder-bone-4 focus:outline-none focus:border-brass-0"
           required
+          style={inputStyle}
         />
       </div>
 
       <div>
-        <label className="block text-sm text-bone-2 mb-1">
+        <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>
           Definition{hasMarkdown ? " (Markdown supported)" : ""}
         </label>
         <textarea
@@ -86,42 +69,50 @@ export default function WikiEditor({ onSubmit, loading }: Props) {
           value={definition}
           onChange={(e) => setDefinition(e.target.value)}
           rows={6}
-          placeholder="Describe the business rule in plain English..."
-          className="w-full bg-ink-3 border border-bone-4 rounded px-3 py-2 text-bone-0 placeholder-bone-4 focus:outline-none focus:border-brass-0 resize-y font-mono text-sm"
+          placeholder="Describe the business rule in plain English…"
+          style={{ ...inputStyle, fontFamily: "var(--font-mono)", fontSize: 13, resize: "vertical" }}
         />
       </div>
 
       {showAssist && (
-        <div data-testid="authoring-assist" className="space-y-2">
-          {assists.length > 0 ? (
-            assists.map((a, i) => (
-              <div
-                key={i}
-                className={`p-3 rounded text-sm border ${
-                  a.severity === "warning"
-                    ? "border-yellow-600 bg-yellow-900/20 text-yellow-200"
-                    : "border-blue-600 bg-blue-900/20 text-blue-200"
-                }`}
-              >
-                <span className="font-semibold uppercase text-xs">{a.type}</span>
-                <p className="mt-1">{a.message}</p>
-              </div>
-            ))
-          ) : (
-            <div className="p-3 rounded text-sm border border-green-700 bg-green-900/20 text-green-300">
-              <span className="text-xs">✓ No issues detected with this rule.</span>
+        <div data-testid="authoring-assist" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {assists.length > 0 ? assists.map((a, i) => (
+            <div
+              key={i}
+              style={{
+                padding: "10px 14px", borderRadius: 8, fontSize: 13,
+                border: `1px solid ${a.severity === "warning" ? "var(--warn)" : "var(--info)"}`,
+                background: a.severity === "warning" ? "var(--warn-soft)" : "var(--info-soft)",
+                color: a.severity === "warning" ? "var(--warn)" : "var(--info)",
+              }}
+            >
+              <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>{a.type}</span>
+              <p style={{ margin: "4px 0 0" }}>{a.message}</p>
+            </div>
+          )) : (
+            <div style={{ padding: "10px 14px", borderRadius: 8, fontSize: 13, border: "1px solid var(--ok)", background: "var(--ok-soft)", color: "var(--ok)" }}>
+              ✓ No issues detected with this rule.
             </div>
           )}
         </div>
       )}
 
-      <button
-        type="submit"
-        disabled={loading}
-        className="px-4 py-2 bg-brass-0 text-ink-0 rounded hover:bg-brass-1 disabled:opacity-50 transition-colors font-semibold"
-      >
-        {loading ? "Saving…" : "Propose Rule"}
-      </button>
+      <div>
+        <button
+          type="submit"
+          disabled={loading}
+          style={{
+            padding: "9px 20px", border: 0, borderRadius: 999,
+            background: loading ? "var(--accent-soft)" : "var(--accent)",
+            color: loading ? "var(--accent-deep)" : "#fff",
+            fontSize: 14, fontWeight: 600,
+            cursor: loading ? "not-allowed" : "pointer",
+            fontFamily: "var(--font-sans)",
+          }}
+        >
+          {loading ? "Saving…" : "Propose Rule"}
+        </button>
+      </div>
     </form>
   );
 }

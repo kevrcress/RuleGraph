@@ -5,6 +5,14 @@ import { useAuthStore } from "../../store/authStore";
 import { useViewStore } from "../../store/viewStore";
 import { AxiosError } from "axios";
 
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "10px 12px",
+  border: "1px solid var(--line)", borderRadius: 8,
+  fontSize: 14, fontFamily: "var(--font-sans)",
+  background: "var(--panel)", color: "var(--ink)",
+  outline: "none",
+};
+
 export default function Login() {
   const navigate = useNavigate();
   const { setAuth } = useAuthStore();
@@ -22,7 +30,6 @@ export default function Login() {
       const loginRes = await apiClient.post("/auth/login", { email, password });
       const token = loginRes.data.access_token;
 
-      // Decode JWT (base64url → base64 → JSON)
       const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
       const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
       const payload = JSON.parse(atob(padded));
@@ -36,11 +43,7 @@ export default function Login() {
       };
 
       setAuth(token, user);
-
-      // Set default view based on role
-      const technicalRoles = ["tech_lead", "admin"];
-      setMode(technicalRoles.includes(user.role) ? "technical" : "business");
-
+      setMode(["tech_lead", "admin"].includes(user.role) ? "technical" : "business");
       navigate("/rules");
     } catch (err) {
       const axiosErr = err as AxiosError<{ detail: string }>;
@@ -51,53 +54,80 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-ink-0 flex items-center justify-center">
-      <div className="w-full max-w-sm bg-ink-1 border border-bone-4 rounded-lg p-8">
-        <h1 className="text-2xl font-serif text-brass-0 mb-6 text-center">RuleGraph</h1>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <div style={{ minHeight: "100vh", background: "var(--surface)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 380, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 10, padding: 32 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: "center", marginBottom: 28 }}>
+          <div style={{ width: 32, height: 32, borderRadius: 8, background: "var(--accent)", display: "grid", placeItems: "center" }}>
+            <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
+              <circle cx="3.5" cy="3.5" r="2" fill="#fff" />
+              <circle cx="12.5" cy="3.5" r="2" fill="#fff" opacity="0.7" />
+              <circle cx="8" cy="12" r="2" fill="#fff" opacity="0.85" />
+              <path d="M3.5 3.5L12.5 3.5M3.5 3.5L8 12M12.5 3.5L8 12" stroke="#fff" strokeWidth="0.9" opacity="0.4" />
+            </svg>
+          </div>
+          <span style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.015em" }}>RuleGraph</span>
+        </div>
+
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div>
-            <label className="block text-sm text-bone-2 mb-1">Email</label>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>Email</label>
             <input
               name="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
-              className="w-full bg-ink-3 border border-bone-4 rounded px-3 py-2 text-bone-0 focus:outline-none focus:border-brass-0"
               placeholder="you@example.com"
+              style={inputStyle}
             />
           </div>
           <div>
-            <label className="block text-sm text-bone-2 mb-1">Password</label>
+            <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--ink)", marginBottom: 6 }}>Password</label>
             <input
               name="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full bg-ink-3 border border-bone-4 rounded px-3 py-2 text-bone-0 focus:outline-none focus:border-brass-0"
+              style={inputStyle}
             />
           </div>
+
           {error && (
             <div
               data-testid="error"
               role="alert"
-              className="error text-ember text-sm bg-ember/10 border border-ember/30 rounded p-2"
+              className="error"
+              style={{
+                fontSize: 13, color: "var(--danger)",
+                background: "var(--danger-soft)",
+                border: "1px solid var(--danger)",
+                borderRadius: 8, padding: "8px 12px",
+              }}
             >
               {error}
             </div>
           )}
+
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-brass-0 text-ink-0 py-2 rounded font-semibold hover:bg-brass-1 disabled:opacity-50 transition-colors"
+            style={{
+              width: "100%", padding: "10px 16px",
+              background: loading ? "var(--accent-soft)" : "var(--accent)",
+              color: loading ? "var(--accent-deep)" : "#fff",
+              border: 0, borderRadius: 999,
+              fontSize: 14, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer",
+              fontFamily: "var(--font-sans)", transition: "background 150ms",
+            }}
           >
             {loading ? "Signing in…" : "Sign In"}
           </button>
         </form>
-        <p className="mt-4 text-center text-sm text-bone-3">
+
+        <p style={{ marginTop: 20, textAlign: "center", fontSize: 13, color: "var(--ink3)" }}>
           No account?{" "}
-          <Link to="/register" className="text-brass-0 hover:underline">
+          <Link to="/register" style={{ color: "var(--accent)", fontWeight: 600, textDecoration: "none" }}>
             Register
           </Link>
         </p>

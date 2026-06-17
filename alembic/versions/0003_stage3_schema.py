@@ -14,6 +14,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("SET lock_timeout = '3s'")
     op.add_column(
         "terminology_inconsistencies",
         sa.Column("status", sa.Text(), nullable=True, server_default="pending"),

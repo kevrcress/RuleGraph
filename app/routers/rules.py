@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, asc, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -32,21 +32,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/rules", tags=["rules"])
 
 
+_SORT_COLUMNS = {
+    "title": Rule.title,
+    "confidence": Rule.extraction_confidence,
+    "created_at": Rule.created_at,
+}
+
+
 @router.get("", response_model=PaginatedRules)
 async def list_rules(
     page: int = Query(default=1, ge=1),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=200, ge=1, le=200),
+    sort: str = Query(default="created_at"),
+    order: str = Query(default="desc"),
+    status: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
+    from app.models.rule import RuleStatusEnum as RSE
     effective_limit = min(limit, settings.max_page_limit)
     offset = (page - 1) * effective_limit
 
-    count_result = await db.execute(select(func.count()).select_from(Rule))
+    sort_col = _SORT_COLUMNS.get(sort, Rule.created_at)
+    order_fn = asc if order == "asc" else desc
+
+    base_query = select(Rule)
+    if status:
+        try:
+            status_val = RSE(status)
+            base_query = base_query.where(Rule.status == status_val)
+        except ValueError:
+            pass
+
+    count_result = await db.execute(
+        select(func.count()).select_from(base_query.subquery())
+    )
     total = count_result.scalar_one()
 
     items_result = await db.execute(
-        select(Rule).order_by(Rule.created_at.desc()).offset(offset).limit(effective_limit)
+        base_query.order_by(order_fn(sort_col)).offset(offset).limit(effective_limit)
     )
     rules = items_result.scalars().all()
 

@@ -7,7 +7,7 @@ POST /ingest/migrate
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -61,23 +61,36 @@ async def ingest_file(
 
 @router.post("")
 async def ingest_all_sources(
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
     """
-    Full migration ingest — reads rulegraph.yaml and ingests all configured sources.
-    Source connectors (ADO, GitHub, Confluence) are stubbed; use /ingest/file for local files.
+    Trigger ingest for all active sources configured via /admin/sources.
+    Each source runs as a background task. Use GET /admin/sources to check last_ingested_at.
     """
-    # Phase 1: connectors are stubs — return instructional response
+    from sqlalchemy import select
+    from app.models.ingest_source import IngestSource
+    from app.routers.sources import _run_source_ingest
+
+    result = await db.execute(select(IngestSource).where(IngestSource.status == "active"))
+    sources = result.scalars().all()
+
+    if not sources:
+        return {
+            "status": "no_sources_configured",
+            "message": "No active sources. Add repos via Admin → Sources.",
+            "sources_triggered": 0,
+        }
+
+    for src in sources:
+        background_tasks.add_task(_run_source_ingest, str(src.id))
+
     return {
-        "status": "no_sources_configured",
-        "message": (
-            "No active source connectors configured. "
-            "Use POST /ingest/file to ingest individual files, "
-            "or configure sources in rulegraph.yaml and connect via ADO/GitHub PAT."
-        ),
-        "sources_attempted": 0,
-        "files_processed": 0,
+        "status": "started",
+        "message": f"Ingesting {len(sources)} source(s) in the background.",
+        "sources_triggered": len(sources),
+        "sources": [s.name for s in sources],
     }
 
 

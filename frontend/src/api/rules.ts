@@ -14,11 +14,13 @@ export interface RuleListItem {
 export interface RuleDetail extends RuleListItem {
   owner_id: string | null;
   environment: string | null;
+  source_file: string | null;
   graph_quality_score: number | null;
   cognee_node_id: string | null;
   workitem_id: string | null;
   workitem_url: string | null;
   coverage_status: string | null;
+  code_behavior: string | null;
   updated_at: string | null;
   deprecated_at: string | null;
 }
@@ -30,11 +32,20 @@ export interface PaginatedRules {
   limit: number;
 }
 
-export const useRules = (page = 1, limit = 50, search?: string) =>
+export const useDriftRules = () =>
   useQuery({
-    queryKey: ["rules", page, limit, search],
+    queryKey: ["rules", "drift"],
     queryFn: async () => {
-      const params: Record<string, unknown> = { page, limit };
+      const res = await apiClient.get<PaginatedRules>("/rules", { params: { status: "drift", limit: 200 } });
+      return res.data.items as RuleDetail[];
+    },
+  });
+
+export const useRules = (page = 1, limit = 200, search?: string, sort = "created_at", order = "desc") =>
+  useQuery({
+    queryKey: ["rules", page, limit, search, sort, order],
+    queryFn: async () => {
+      const params: Record<string, unknown> = { page, limit, sort, order };
       const res = await apiClient.get<PaginatedRules>("/rules", { params });
       let items = res.data.items;
       if (search) {
@@ -58,6 +69,20 @@ export const useRule = (id: string) =>
     },
     enabled: !!id,
   });
+
+export const useUpdateRuleStatus = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: string }) => {
+      const res = await apiClient.put(`/rules/${id}`, { status });
+      return res.data;
+    },
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: ["rules"] });
+      qc.invalidateQueries({ queryKey: ["rule", id] });
+    },
+  });
+};
 
 export const useCreateRule = () => {
   const qc = useQueryClient();
