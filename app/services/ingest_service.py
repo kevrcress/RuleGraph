@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum
+from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum, IngestFileCheckpoint
 from app.models.rule import Rule, RuleStatusEnum, Service, RuleService, RuleVersion
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,57 @@ async def complete_run(
         if last_processed_file:
             run.last_processed_file = last_processed_file
         await db.flush()
+
+
+async def mark_file_checkpoint(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    file_path: str,
+    status: str,
+    error_message: Optional[str] = None,
+) -> IngestFileCheckpoint:
+    """Upsert a per-file checkpoint for an ingest run.
+
+    Keyed on (ingest_run_id, file_path). Sets processed_at=now() when status
+    is "done" or "error". Follows the select-then-insert/update pattern of store_rule.
+    """
+    result = await db.execute(
+        select(IngestFileCheckpoint)
+        .where(IngestFileCheckpoint.ingest_run_id == run_id)
+        .where(IngestFileCheckpoint.file_path == file_path)
+    )
+    checkpoint = result.scalar_one_or_none()
+
+    processed_at = datetime.now(timezone.utc) if status in ("done", "error") else None
+
+    if checkpoint is not None:
+        checkpoint.status = status
+        checkpoint.error_message = error_message
+        checkpoint.processed_at = processed_at
+        await db.flush()
+        return checkpoint
+
+    checkpoint = IngestFileCheckpoint(
+        id=uuid.uuid4(),
+        ingest_run_id=run_id,
+        file_path=file_path,
+        status=status,
+        error_message=error_message,
+        processed_at=processed_at,
+    )
+    db.add(checkpoint)
+    await db.flush()
+    return checkpoint
+
+
+async def get_done_files(db: AsyncSession, run_id: uuid.UUID) -> set[str]:
+    """Return the set of file paths already marked done for an ingest run."""
+    result = await db.execute(
+        select(IngestFileCheckpoint.file_path)
+        .where(IngestFileCheckpoint.ingest_run_id == run_id)
+        .where(IngestFileCheckpoint.status == "done")
+    )
+    return set(result.scalars().all())
 
 
 async def log_error(

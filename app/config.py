@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # LLM — optional at startup; can be set via Admin → Settings instead
     anthropic_api_key: str = Field(default="", description="Anthropic API key (can be set via admin UI instead)")
     litellm_base_url: str = Field(default="", description="Optional LiteLLM proxy base URL for local model testing")
+    llm_request_timeout_seconds: int = 300
+
+    # Background worker (arq)
+    ingest_job_timeout_seconds: int = 7200
+    ingest_stale_grace_seconds: int = 600
 
     # Security
     jwt_secret_key: str = Field(..., description="Secret key for JWT token signing")

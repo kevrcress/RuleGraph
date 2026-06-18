@@ -45,6 +45,11 @@ class IngestSourceResponse(BaseModel):
     ingest_error: Optional[str]
     ingest_progress: Optional[str] = None
     last_commit_sha: Optional[str] = None
+    run_status: Optional[str] = None
+    done_file_count: int = 0
+    total_file_count: int = 0
+    run_is_stale: bool = False
+    can_resume: bool = False
 
     model_config = {"from_attributes": True}
 

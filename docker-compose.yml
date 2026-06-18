@@ -15,5 +15,22 @@ services:
     ports:
       - "6379:6379"
 
+  # ── arq ingest worker ─────────────────────────────────────────────────────
+  # Runs source ingest jobs out-of-process so they survive a uvicorn restart.
+  # The backend is not yet containerized (no Dockerfile), so this service is
+  # commented out. Run the worker locally instead:
+  #
+  #     arq app.tasks.worker.WorkerSettings
+  #
+  # Once a backend image exists, uncomment and point `build`/`image` at it:
+  #
+  # worker:
+  #   build: .
+  #   command: arq app.tasks.worker.WorkerSettings
+  #   env_file: .env
+  #   depends_on:
+  #     - redis
+  #     - postgres
+
 volumes:
   postgres_data:

@@ -381,3 +381,150 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 **Decision**: `batch_pipeline.py` now calls `derive_module_from_path(file_path, repo_name)` per file, which strips generic directory segments (`src`, `lib`, `packages`, etc.) and returns the first meaningful directory as the module label (e.g. `Medusa/payments`, `Medusa/orders`). A service record is created per distinct module and cached in-memory for the batch run. `pipeline.py` applies the same logic for single-file uploads that lack an explicit `source_name`.
 
 **Reasoning**: Wiki pages need natural domain groupings to be generated from the knowledge base. Module-level services derived from directory structure is the least-invasive way to get this without a schema change. Existing data is unaffected (no backfill). The heuristic is imperfect but good enough — a `Medusa/src/payments/service.ts` file correctly maps to `Medusa/payments`.
+
+---
+
+## Post-Stage 8: Resumable ingest pipeline
+
+> Cross-reference: `.claude-hve-tracking/changes/2026-06-18/resumable-ingest-pipeline-changes.md` (DD-/DR- items recorded per phase).
+
+### DEC-034: Per-file checkpoint table chosen over a coarse single-cursor approach
+
+**Date**: 2026-06-18
+**Context**: The local-LLM ingest pipeline could crash mid-run (hung generation, worker restart) and had no way to resume without re-processing every file — re-spending LLM cost and risking duplicate rules.
+
+**Decision**: Added an `ingest_file_checkpoints` table (migration `0014`) with one row per file per run, keyed by a UNIQUE `(ingest_run_id, file_path)` constraint and carrying a `status` (`done`/`error`), error message, and timestamps. Resume re-lists the source's files and skips any already checkpointed `done`. A coarser single-cursor / last-offset column on `ingest_runs` was rejected.
+
+**Reasoning**: A per-file row gives exact resume granularity and idempotency: the UNIQUE key makes `mark_file_checkpoint` an upsert, so re-running a file is a no-op write, and `get_done_files(run.id)` is an exact set the resume path subtracts from the work list. A single offset/cursor can only express "stop at N", which is wrong when files complete out of order (batch path) or when some files error and later succeed — it cannot represent the sparse done/error map the LLM pipeline actually produces.
+
+---
+
+### DEC-035: arq `max_tries = 1` + explicit admin resume, NOT arq auto-retry
+
+**Date**: 2026-06-18
+**Context**: Moving ingest onto the arq worker (Phase 6) exposed arq's job-level auto-retry. Combined with the per-file LLM extraction retry budget (max 1), a job-level retry would re-run the whole job and re-do every file's LLM retry, multiplying API cost and re-processing already-done files.
+
+**Decision**: `WorkerSettings.max_tries = 1` disables arq auto-retry for the ingest job. Durability instead comes from idempotent resume: a single attempt runs, and recovery is operator-driven via `POST /admin/sources/{id}/resume`, which re-lists files and skips `done`-checkpointed ones. (Recorded in the changes log as DD-001.)
+
+**Reasoning**: The job is already idempotent and resumable (DEC-034), so a blind job re-run buys nothing the resume endpoint doesn't, and it actively harms the LLM=1 retry-budget constraint by multiplying per-file LLM attempts on every retry. A single attempt + explicit, checkpoint-aware resume is the correct durability model for a cost-bounded LLM pipeline.
+
+---
+
+### DEC-036: Bounded `ingest_job_timeout_seconds` (default 7200s) + manual resume, not an unbounded job timeout
+
+**Date**: 2026-06-18
+**Context**: Long ingests (many files, slow local LLM) need a worker job timeout. An unbounded timeout risks a job blocking the worker indefinitely on a wedged run.
+
+**Decision**: Added `ingest_job_timeout_seconds` (config default 7200s; set as `WorkerSettings.job_timeout`). When a run exceeds it, the job ends and an admin resumes via the resume endpoint, which picks up the remaining (not-yet-`done`) files.
+
+**Reasoning**: A bounded timeout guarantees the worker is never blocked forever by a single run, while the checkpoint-based resume means hitting the timeout is non-destructive — no work is lost and no file is re-processed. This pairs with DEC-035: the system favors bounded attempts plus explicit resume over open-ended execution or blind retry.
+
+---
+
+### DEC-037: `llm_request_timeout_seconds` default 300s on the Anthropic client
+
+**Date**: 2026-06-18
+**Context**: A hung local-LLM generation (LiteLLM/Ollama sidecar) could hang an entire ingest run with no per-file timeout, since the Anthropic client was constructed with no `timeout`.
+
+**Decision**: Added `llm_request_timeout_seconds` (config default 300s), threaded through `settings_service.get_llm_request_timeout(db)` into `extractor._get_client(timeout=...)` on both the proxy and direct branches. An `APITimeoutError` surfaces as `ExtractionResult.error`.
+
+**Reasoning**: A per-request timeout converts a hung generation into the existing per-file error path (logged as an `IngestError` + `error` checkpoint) instead of hanging the whole run. The run continues with the next file, and the timed-out file is retryable on resume. 300s is generous for a single local generation while still bounding worst-case stall.
+
+---
+
+### DEC-038: Resume REUSES the existing incomplete `IngestRun` id, not a fresh run
+
+**Date**: 2026-06-18
+**Context**: Checkpoints are keyed on `ingest_run_id`. A resume that created a fresh run via `start_run` would see an empty `get_done_files`, defeating skip-already-done.
+
+**Decision**: Resume reuses the existing incomplete `IngestRun` (its id) in both the sequential and batch paths, gated by a `resume: bool` param alongside the Phase-4 `resume_run` object. New checkpoints attach to the same run. (Changes log DD-104.)
+
+**Reasoning**: Only by reusing the same run id does the prior attempt's checkpoint set become visible to the resume, so files already `done` are correctly skipped and the run's tallies accumulate across attempts rather than resetting.
+
+---
+
+### DEC-039: `ingest_file_checkpoints.id` is a UUID pk with no server-side default; arq pool lives in `main.py` lifespan; the compose `worker` service is committed commented
+
+**Date**: 2026-06-18
+**Context**: Several smaller, durable implementation decisions made during the resumable-ingest work that future readers may otherwise re-litigate.
+
+**Decision**:
+- `ingest_file_checkpoints.id` is declared as a UUID primary key with **no** server-side default (no `gen_random_uuid()`), matching every existing table migration and the ORM's Python-side `default=uuid.uuid4` (changes log DD-101).
+- The arq Redis pool is created in `app/main.py` startup (`app.state.arq_pool`) and closed on shutdown via `aclose()`, beside the existing `_reset_stuck_ingests` hook.
+- The `docker-compose.yml` `worker` service is committed **commented**, with `arq app.tasks.worker.WorkerSettings` documented in the README as the runnable path (changes log DD-002).
+
+**Reasoning**: The UUID-without-server-default choice avoids a Postgres-extension dependency and matches house style. Owning the arq pool in the app lifespan keeps a single managed connection lifecycle. The worker compose service is left commented because there is no backend Dockerfile/image to `build` yet — an active service would fail `docker compose up`; uncomment once a backend image exists.
+
+---
+
+### DEC-040: `ingest_all_sources` migrated to arq enqueue (third enqueue site)
+
+**Date**: 2026-06-18
+**Context**: Phase 6 named only `trigger_ingest` and `resume_ingest` for the BackgroundTasks→arq migration, but `app/routers/ingest.py:ingest_all_sources` was a third site still using `BackgroundTasks.add_task(_run_source_ingest, ...)`.
+
+**Decision**: Migrated `ingest_all_sources` to `arq_pool.enqueue_job("run_source_ingest", ...)` too, so no legacy BackgroundTasks ingest path remains. `_run_source_ingest` is retained only as a thin delegate for any remaining direct (non-enqueue) callers. (Changes log DD-003.)
+
+**Reasoning**: Leaving the "ingest all sources" trigger on BackgroundTasks would defeat the phase's durability goal (work lost on uvicorn restart) and leave a divergent, non-resumable code path. Keeping all three enqueue sites on the same arq contract makes the durability guarantee uniform.
+
+---
+
+### DEC-041: Worker-crash recovery is staleness-based, swept by an arq cron in the worker domain (and de-blunted at web startup)
+
+**Date**: 2026-06-18
+**Context**: A worker crash leaves a source pinned at `ingest_status="ingesting"` forever — the run never completes, so nothing flips it back. The pre-existing web-startup hook (`_reset_stuck_ingests`) unconditionally flipped *every* `ingesting` source to `error`, which false-flips a legitimate in-flight run whenever the web process restarts independently of the worker.
+
+**Decision**: Recovery keys on *staleness*, not process startup. `app/tasks/recovery.py` owns the single predicate `is_run_stale` (no progress within `ingest_job_timeout_seconds + ingest_stale_grace_seconds`, default grace 600s) and the shared sweep `reset_stale_ingests`, which flips only stale `ingesting` sources to `error` and marks their `running` runs `completed_with_errors`. An arq cron job `_sweep_stale` (`app/tasks/worker.py`) runs the sweep every 5 minutes in the worker domain. The web-startup hook is de-blunted to delegate to the same `reset_stale_ingests`, so a web restart during a healthy worker run no longer false-flips it. (Changes log DD-002, DD-003.)
+
+**Reasoning**: Recovery belongs where the work runs (the worker), and the worker is the process most likely to still be alive to self-heal after a transient crash; a cron sweep is durable and needs no external scheduler. Staleness is the correct signal because it distinguishes a crashed run from a slow-but-progressing one — the threshold exceeds arq's own `job_timeout`, so the sweep can never race a job arq would still consider live. A single shared predicate/sweep keeps the worker cron, the web-startup hook, and the Resume UI (DEC-043) from drifting apart.
+
+---
+
+### DEC-042: arq queue-name alignment (the queue-mismatch fix) and 503 on an unavailable arq pool
+
+**Date**: 2026-06-18
+**Context**: Enqueue sites called `enqueue_job(...)` without `_queue_name`, so jobs landed on arq's default queue (`arq:queue`) while `WorkerSettings.queue_name` consumed `rulegraph:tasks` — enqueued ingest jobs were **never consumed**. Separately, when Redis/the worker is unreachable, `app.state.arq_pool` is `None`, and an enqueue attempt would fail with an opaque 500.
+
+**Decision**: A module-level `INGEST_QUEUE_NAME = "rulegraph:tasks"` constant in `app/tasks/worker.py` is the single source of truth: `WorkerSettings.queue_name` is set from it, and all three enqueue sites (`trigger_ingest`, `resume_ingest`, `ingest_all_sources`) pass `_queue_name=INGEST_QUEUE_NAME`. A `_require_arq_pool` helper raises `HTTPException(503, "Ingest queue unavailable — background worker/Redis not reachable")` when the pool is `None`, guarding every enqueue site (and, for resume, before the resumable-run DB lookup). (Changes log DD-001, DD-004.)
+
+**Reasoning**: Producer and consumer must name the same queue or work silently disappears; centralizing the name on one constant makes a future drift a compile-visible import rather than a silent mismatch. Returning an explicit 503 (a degraded-mode signal) tells the client the queue is unavailable rather than masquerading the outage as a server bug, and placing the resume guard before the DB lookup makes the failure mode independent of run state.
+
+---
+
+### DEC-043: Resume is enabled on a stale run (`run_is_stale`), not only after the run leaves `ingesting`
+
+**Date**: 2026-06-18
+**Context**: The Resume control was gated off `ingest_status != "ingesting"`. A crashed run stays pinned at `ingesting` until the next cron sweep, so for up to ~5 minutes the admin could see a clearly-stuck source with no way to act on it.
+
+**Decision**: `IngestSourceResponse` carries a `run_is_stale: bool`, computed with the *same* `is_run_stale` predicate and threshold as the cron sweep (DEC-041) and surfaced on both the list and get-by-id routes. The frontend enables Resume when `canResume(source) && (ingest_status !== "ingesting" || run_is_stale)` — i.e. immediately once the run is stale, without waiting for the sweep. During a healthy ingesting run the button stays rendered-but-disabled. (Changes log DD-005.)
+
+**Reasoning**: Reusing the one staleness predicate means the UI's "is it stuck?" judgment can never disagree with the recovery sweep's. Enabling Resume on staleness closes the window where an operator can see a dead run but not act; the no-double-enqueue guarantee is preserved because a *healthy* ingesting run keeps Resume disabled.
+
+---
+
+### DR-301 (resolved by verification): source-name uniqueness is enforced by a DB constraint, no code change
+
+**Date**: 2026-06-18
+**Context**: Recovery and resume link runs to sources by `source_name` only (`ingest_runs` has no FK to `ingest_sources`). This linkage is correct only if source names are unique; an ambiguous name would let a sweep or resume match the wrong source's runs.
+
+**Decision**: Verified `IngestSource.name` is declared `unique=True, nullable=False` (the model/migration column constraint). The `source_name`-based linkage in `recovery.py` and `ingest_job._find_resumable_run` is therefore safe as written — no code change required.
+
+**Reasoning**: A discrepancy surfaced during implementation (DR-301) about whether name-based linkage was sound. The existing DB-level uniqueness constraint already guarantees a name maps to at most one source, so the assumption the recovery/resume code rests on is enforced at the schema layer; recording the verification closes the discrepancy without adding redundant code-level guards.
+
+---
+
+### DEC-044: Post-PR-review hardening of the resumable ingest pipeline (data-loss fixes + perf)
+
+**Date**: 2026-06-18
+**Context**: An 8-dimension PR review of the uncommitted resumable-ingest + crash-recovery change set (`.claude-hve-tracking/pr/review/main/2026-06-18-review.md`) surfaced 9 Major findings, including verified error-path data-loss bugs. These were fixed before the first commit of this work.
+
+**Decision**: Applied all 9:
+- **Data-loss (PR-001):** the batch pipeline (both the Anthropic-batch and the proxy/sequential paths) checkpointed a file `"done"` even when its `store_rule` calls all failed; on Resume `get_done_files` then skipped it. Now a file is checkpointed `"error"` if any of its rule stores fail, so Resume reprocesses it (`store_rule` is an idempotent upsert, so no duplication).
+- **Data-loss (PR-002):** `last_commit_sha` was advanced even on an errored run, so a later plain re-trigger saw an empty incremental diff and skipped the failed files. Now it advances only on a clean (error-free) completion; the failed files stay inside the incremental diff window.
+- **Reliability (PR-003):** the batch results loop gained per-file try/except (mirroring the sequential path) so one unexpected error no longer truncates the rest of the results stream.
+- **Reliability (PR-004):** `extractor._ensure_legacy_client` now rebuilds when the requested timeout differs (it previously pinned the first caller's timeout for the process lifetime); covered by a new unit test.
+- **Maintainability (PR-005):** resumability is now decided by a single shared `is_run_resumable` predicate; the API exposes a server-authoritative `can_resume` and the frontend reads it directly instead of recomputing — the UI can no longer offer a resume the server would reject.
+- **Performance (PR-009):** new migration `0015` adds the missing composite index `ix_ingest_runs_source_started` on `ingest_runs(source_name, started_at)`.
+- **Performance (PR-010):** `GET /admin/sources` replaced its per-row N+1 (~4 queries × N sources) with a batched, set-based progress lookup (`_runs_progress_for_sources`) — a handful of queries regardless of page size; the single staleness arithmetic is shared via `recovery.staleness_exceeded`.
+- **Docs (PR-013/PR-014):** documented the ingest tunables in `.env.example` (noting the `rulegraph.yaml` `worker:` keys are docs-only, not loaded at runtime) and added a prominent README note that the arq worker is mandatory — without it ingest queues forever and the recovery sweep never runs.
+
+**Reasoning**: PR-001+PR-002 together made a store-failed file unrecoverable by either Resume or re-trigger — a real data-integrity risk worth fixing before the code ever landed. The remaining items remove a latent stream-truncation bug, a config foot-gun, predicate drift, and an N+1 on a polled admin endpoint. Full suite: 169 passed, 0 failed; frontend build clean.

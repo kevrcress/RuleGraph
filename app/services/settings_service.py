@@ -32,6 +32,41 @@ async def get_complexity_threshold(db: AsyncSession) -> float:
         return _settings.complexity_threshold
 
 
+async def get_llm_request_timeout(db: AsyncSession) -> int:
+    """Return the LLM request timeout in seconds: DB first, config default fallback."""
+    from app.config import settings as _settings
+    value = await get_system_setting(db, "llm_request_timeout_seconds", "")
+    if not value:
+        return _settings.llm_request_timeout_seconds
+    try:
+        return int(value)
+    except ValueError:
+        return _settings.llm_request_timeout_seconds
+
+
+async def get_ingest_stale_grace(db: AsyncSession) -> int:
+    """Return the ingest stale-grace seconds: DB first, config default fallback."""
+    from app.config import settings as _settings
+    value = await get_system_setting(db, "ingest_stale_grace_seconds", "")
+    if not value:
+        return _settings.ingest_stale_grace_seconds
+    try:
+        return int(value)
+    except ValueError:
+        return _settings.ingest_stale_grace_seconds
+
+
+async def get_ingest_stale_threshold(db: AsyncSession) -> int:
+    """Seconds of no-progress before a run is declared dead: job timeout + grace.
+
+    Single source of truth for the staleness threshold, shared by the recovery sweep
+    (``app/tasks/recovery.py``) and the status route (``_latest_run_progress``) so the
+    two can never disagree on how long is "too long".
+    """
+    from app.config import settings as _settings
+    return _settings.ingest_job_timeout_seconds + await get_ingest_stale_grace(db)
+
+
 async def get_litellm_base_url(db: AsyncSession) -> str:
     """Return the LiteLLM proxy base URL: DB first, env var fallback."""
     from app.config import settings as _settings

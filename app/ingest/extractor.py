@@ -21,26 +21,31 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTENT_CHARS = 32_000
 
-def _get_client(api_key: str, base_url: str = "") -> anthropic.AsyncAnthropic:
+def _get_client(api_key: str, base_url: str = "", timeout: float | None = None) -> anthropic.AsyncAnthropic:
     effective_url = base_url or settings.litellm_base_url
     if effective_url:
-        return anthropic.AsyncAnthropic(api_key="litellm", base_url=effective_url)
-    return anthropic.AsyncAnthropic(api_key=api_key)
+        return anthropic.AsyncAnthropic(api_key="litellm", base_url=effective_url, timeout=timeout)
+    return anthropic.AsyncAnthropic(api_key=api_key, timeout=timeout)
 
 
 # Legacy module-level client for callers that haven't been updated yet.
 # Populated lazily so the app can start without ANTHROPIC_API_KEY in env.
 _client: anthropic.AsyncAnthropic | None = None
+_client_timeout: float | None = None
 
 
-def _ensure_legacy_client() -> anthropic.AsyncAnthropic:
-    global _client
-    if _client is None:
+def _ensure_legacy_client(timeout: float | None = None) -> anthropic.AsyncAnthropic:
+    global _client, _client_timeout
+    # Rebuild when the requested timeout differs from the cached client's, otherwise the
+    # first caller's timeout would be pinned for the process lifetime and later values
+    # (e.g. an admin-tuned timeout) would be silently ignored.
+    if _client is None or _client_timeout != timeout:
         if not settings.anthropic_api_key:
             raise RuntimeError(
                 "Anthropic API key not configured. Set it in Admin → Settings or via ANTHROPIC_API_KEY env var."
             )
-        _client = _get_client(settings.anthropic_api_key)
+        _client = _get_client(settings.anthropic_api_key, timeout=timeout)
+        _client_timeout = timeout
     return _client
 
 # System prompt with explicit prompt injection framing (verbatim from spec)
@@ -200,12 +205,18 @@ async def extract_rules(
         from app.services.settings_service import (
             is_claude_enabled, get_complexity_threshold, get_anthropic_api_key,
             get_simple_model, get_complex_model, get_litellm_base_url,
+            get_llm_request_timeout,
         )
         if not await is_claude_enabled(db):
             logger.info("Claude API disabled by admin — skipping LLM extraction")
             return ExtractionResult(rules=[], model_used="disabled", error="Claude API is disabled by admin")
         threshold = await get_complexity_threshold(db)
-        client = _get_client(await get_anthropic_api_key(db), base_url=await get_litellm_base_url(db))
+        timeout = await get_llm_request_timeout(db)
+        client = _get_client(
+            await get_anthropic_api_key(db),
+            base_url=await get_litellm_base_url(db),
+            timeout=timeout,
+        )
         simple_model = await get_simple_model(db)
         complex_model = await get_complex_model(db)
         # Close the implicit read transaction so it doesn't stay open during the
@@ -213,7 +224,7 @@ async def extract_rules(
         await db.commit()
     else:
         threshold = settings.complexity_threshold
-        client = _ensure_legacy_client()
+        client = _ensure_legacy_client(timeout=settings.llm_request_timeout_seconds)
         simple_model = settings.simple_model
         complex_model = settings.complex_model
 
