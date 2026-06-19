@@ -128,6 +128,16 @@ class TestIngestResume:
         assert done_after_resume == {_F1, _F2, _F3}, f"all files should be done, got {done_after_resume}"
         assert summary["files_processed"] == 2
 
+        # IV-001: the PERSISTED run tally must reflect the cross-attempt total (3 done,
+        # 0 errored), NOT just this resume pass's local counter (2). Before the fix the
+        # run row under-reported as files_processed=2 / files_errored=2.
+        await db.refresh(run)
+        assert run.files_processed == 3, (
+            f"persisted run tally must be cross-attempt total 3, got {run.files_processed}"
+        )
+        assert run.files_errored == 0, f"all files succeeded on resume, got {run.files_errored}"
+        assert run.status == "completed"
+
         # No duplicate Rule rows: each file contributes exactly one rule, three total.
         rule_count_after_resume = (await db.execute(select(func.count(Rule.id)))).scalar_one()
         assert rule_count_after_resume == rule_count_after_crash + 2, (

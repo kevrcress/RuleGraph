@@ -2,6 +2,7 @@
 RuleGraph FastAPI application entry point.
 """
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +20,45 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 
-app = FastAPI(title="RuleGraph", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown lifecycle (replaces the deprecated @app.on_event handlers).
+
+    Acquire + release the arq pool here so its create/close live together (IV-010).
+    """
+    import asyncio
+    from app.database import async_session_factory
+
+    _logger = logging.getLogger(__name__)
+
+    async with async_session_factory() as _db:
+        await init_cognee(_db)
+    asyncio.create_task(ingest_skills())
+    try:
+        from arq.connections import RedisSettings, create_pool
+        app.state.arq_pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    except Exception:
+        _logger.warning("Could not create arq pool on startup", exc_info=True)
+        app.state.arq_pool = None
+    try:
+        await _reset_stuck_ingests()
+    except Exception:
+        _logger.warning("Could not reset stuck ingests on startup", exc_info=True)
+    try:
+        await _seed_default_settings()
+    except Exception:
+        _logger.warning("Could not seed default settings on startup", exc_info=True)
+
+    yield
+
+    pool = getattr(app.state, "arq_pool", None)
+    if pool is not None:
+        # redis-py >=5 (pinned 5.0.8) — aclose() is the supported coroutine; close()
+        # is deprecated. A downgrade below 5.0.1 would break this. See requirements.txt.
+        await pool.aclose()
+
+
+app = FastAPI(title="RuleGraph", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,39 +67,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup():
-    import asyncio
-    from app.database import async_session_factory
-    async with async_session_factory() as _db:
-        await init_cognee(_db)
-    asyncio.create_task(ingest_skills())
-    try:
-        from arq.connections import RedisSettings, create_pool
-        app.state.arq_pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning("Could not create arq pool on startup", exc_info=True)
-        app.state.arq_pool = None
-    try:
-        await _reset_stuck_ingests()
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning("Could not reset stuck ingests on startup", exc_info=True)
-    try:
-        await _seed_default_settings()
-    except Exception:
-        import logging
-        logging.getLogger(__name__).warning("Could not seed default settings on startup", exc_info=True)
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    pool = getattr(app.state, "arq_pool", None)
-    if pool is not None:
-        await pool.aclose()
 
 
 async def _seed_default_settings() -> None:

@@ -82,7 +82,7 @@ async def ingest_all_sources(
             "sources_triggered": 0,
         }
 
-    from app.tasks.worker import INGEST_QUEUE_NAME
+    from app.tasks.queue import INGEST_QUEUE_NAME
     from app.routers._deps import require_arq_pool
 
     pool = require_arq_pool(request)

@@ -528,3 +528,28 @@ Decisions that are not explicitly specified in `rulegraph-spec-v0.5.md` are logg
 - **Docs (PR-013/PR-014):** documented the ingest tunables in `.env.example` (noting the `rulegraph.yaml` `worker:` keys are docs-only, not loaded at runtime) and added a prominent README note that the arq worker is mandatory — without it ingest queues forever and the recovery sweep never runs.
 
 **Reasoning**: PR-001+PR-002 together made a store-failed file unrecoverable by either Resume or re-trigger — a real data-integrity risk worth fixing before the code ever landed. The remaining items remove a latent stream-truncation bug, a config foot-gun, predicate drift, and an N+1 on a polled admin endpoint. Full suite: 169 passed, 0 failed; frontend build clean.
+
+---
+
+### DEC-045: Reconciled ingest timing model + poll-phase heartbeat
+
+**Date**: 2026-06-18
+**Context**: A follow-up PR review of the resumable-ingest change set found that on the direct Anthropic Batches path three timers collided: the Batch client was built with no request timeout (a hung control-plane call could block a worker forever); the poll budget (`_MAX_POLLS = 240 × 30s = 7200s`) exactly equalled the arq `job_timeout` (7200s); and during the long poll phase no checkpoints are written, so the staleness predicate saw `last_progress = run.started_at` and could flip a still-live batch to `error` while it was still processing at Anthropic.
+
+**Decision**: Reconcile all three around one config-pinned source of truth and add a liveness heartbeat:
+
+| Parameter | Value | Source |
+|---|---|---|
+| Per-request LLM timeout (Batch client) | 300s | `get_llm_request_timeout(db)` |
+| Batch poll budget | `job_timeout − reserve` = 6300s | computed: `(7200 − 900) // 30 = 210` polls |
+| arq `job_timeout` | 7200s | `settings.ingest_job_timeout_seconds` |
+| Stale threshold | `job_timeout + grace` = 7800s | `get_ingest_stale_threshold(db)` |
+| Poll heartbeat | every 30s | `ingest_runs.last_heartbeat_at` (migration 0016) |
+
+- **Invariant**: `poll_budget (6300) < job_timeout (7200) < stale_threshold (7800)`. The poll loop self-times-out (and flushes checkpoints) before arq SIGKILLs the worker; the sweep can't act until past `job_timeout + grace`, by which point arq has already terminated any job it owned.
+- **New config** `ingest_batch_poll_reserve_seconds` (default 900) reserves wall-clock for clone + complexity scoring + results streaming that bracket the poll loop. Env-pinned (not DB) so it shares arq's source for `job_timeout` and cannot drift between web and worker.
+- **Heartbeat**: the poll loop bumps `run.last_heartbeat_at` on each commit; `is_run_stale` and the batched list lookup fold it into `last_progress` (`max(latest checkpoint processed_at, last_heartbeat_at) or started_at`). An alive, actively-polling worker is therefore never declared stale regardless of budget drift.
+
+**Reasoning**: The collision could either cut a legitimately long batch off mid-poll (arq kill before the loop's own TimeoutError) or orphan Anthropic spend by marking a live batch `error`. Tying poll budget to `job_timeout` via a reserve makes the ordering provable, and the heartbeat is a belt-and-suspenders that keeps liveness independent of the threshold arithmetic. `staleness_exceeded` remains the single arithmetic definition — only its `last_progress` input gained the heartbeat term.
+
+**Follow-up (deferred)**: IV-023 proper fix — the connector still materializes all not-yet-done file contents into memory before processing; resume now skips re-reading already-`done` files (`skip_paths`), but streaming files instead of building the full in-memory list is left to a future ticket.

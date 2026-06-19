@@ -20,37 +20,6 @@ from app.security.encryption import decrypt_secret
 logger = logging.getLogger(__name__)
 
 
-def is_run_resumable(run_status: str | None, src_ingest_status: str) -> bool:
-    """Whether a run is incomplete enough to resume.
-
-    A run is "incomplete" when its status is still "running"/"completed_with_errors", or
-    when the source itself is in an error/ingesting state. Shared by the server-side resume
-    gate (`_find_resumable_run`) and the status route's `can_resume` flag so the UI's
-    enable-state and the server's accept/reject can never drift apart.
-    """
-    if run_status is None:
-        return False
-    return run_status in ("running", "completed_with_errors") or src_ingest_status in ("error", "ingesting")
-
-
-async def _find_resumable_run(db, src: IngestSource) -> IngestRun | None:
-    """Return the source's latest incomplete IngestRun, or None.
-
-    Linkage is by source_name only (ingest_runs has no source FK). Latest is by started_at.
-    """
-    run = (await db.execute(
-        select(IngestRun)
-        .where(IngestRun.source_name == src.name)
-        .order_by(IngestRun.started_at.desc(), IngestRun.id.desc())
-        .limit(1)
-    )).scalars().first()
-    if run is None:
-        return None
-    if is_run_resumable(run.status, src.ingest_status):
-        return run
-    return None
-
-
 async def run_ingest_impl(source_id: str, resume: bool = False) -> None:
     """Clone repo, process every file through the pipeline.
 
@@ -59,6 +28,7 @@ async def run_ingest_impl(source_id: str, resume: bool = False) -> None:
     is safe to run from a background task or the arq worker process.
     """
     from app.ingest.connectors.github_repo import GitHubRepoConnector
+    from app.services import ingest_service
 
     async with async_session_factory() as db:
         src = (await db.execute(
@@ -70,11 +40,15 @@ async def run_ingest_impl(source_id: str, resume: bool = False) -> None:
             return
 
         resume_run: IngestRun | None = None
+        done_paths: set[str] = set()
         if resume:
-            resume_run = await _find_resumable_run(db, src)
+            resume_run = await ingest_service.find_resumable_run(db, src)
             if resume_run is None:
                 logger.warning(f"Resume requested for source '{src.name}' but no incomplete run found")
                 return
+            # Already-done files don't need re-reading; pass them to the connector so it
+            # skips loading their content into memory on resume (DEC-045 follow-up).
+            done_paths = await ingest_service.get_done_files(db, resume_run.id)
 
         pat = decrypt_secret(src.pat_encrypted) if src.pat_encrypted else None
 
@@ -87,6 +61,7 @@ async def run_ingest_impl(source_id: str, resume: bool = False) -> None:
                 exclude=src.exclude,
                 test_paths=src.test_paths,
                 last_commit_sha=src.last_commit_sha,
+                skip_paths=done_paths,
             )
         else:
             msg = f"Unsupported source_type '{src.source_type}'"

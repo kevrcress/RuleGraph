@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ingest import IngestFileCheckpoint, IngestRun
 from app.models.ingest_source import IngestSource
+from app.services import ingest_service
 from app.services.settings_service import get_ingest_stale_threshold
 
 logger = logging.getLogger(__name__)
@@ -38,11 +39,12 @@ def staleness_exceeded(last_progress: datetime | None, threshold_seconds: int, n
 async def is_run_stale(db: AsyncSession, run: IngestRun, threshold_seconds: int) -> bool:
     """Return True when ``run`` has made no progress within ``threshold_seconds``.
 
-    Progress is the latest ``IngestFileCheckpoint.processed_at`` for the run if any
-    checkpoints exist, else ``run.started_at`` (a fresh run with 0 files done). A
-    just-started run with no checkpoints is therefore NOT stale (started_at ~ now).
+    Progress is the most recent of: the latest ``IngestFileCheckpoint.processed_at``
+    (per-file work), ``run.last_heartbeat_at`` (the Batch poll-phase liveness signal —
+    DEC-045), else ``run.started_at`` (a fresh run with 0 files done). A just-started
+    run, and a run still actively polling a batch, are therefore NOT stale.
     """
-    last_progress = (await db.execute(
+    checkpoint_progress = (await db.execute(
         select(IngestFileCheckpoint.processed_at)
         .where(IngestFileCheckpoint.ingest_run_id == run.id)
         .where(IngestFileCheckpoint.processed_at.is_not(None))
@@ -50,8 +52,8 @@ async def is_run_stale(db: AsyncSession, run: IngestRun, threshold_seconds: int)
         .limit(1)
     )).scalars().first()
 
-    if last_progress is None:
-        last_progress = run.started_at
+    candidates = [ts for ts in (checkpoint_progress, run.last_heartbeat_at) if ts is not None]
+    last_progress = max(candidates) if candidates else run.started_at
 
     return staleness_exceeded(last_progress, threshold_seconds, datetime.now(timezone.utc))
 
@@ -75,11 +77,7 @@ async def reset_stale_ingests(db: AsyncSession) -> list[str]:
         # abort the whole sweep and starve the others. The cron re-runs every 5 minutes,
         # so anything skipped here is retried on the next tick.
         try:
-            run = (await db.execute(
-                select(IngestRun)
-                .where(IngestRun.source_name == src.name)
-                .order_by(IngestRun.started_at.desc())
-            )).scalars().first()
+            run = await ingest_service.latest_run_for_source(db, src.name)
 
             if run is not None and not await is_run_stale(db, run, threshold):
                 continue

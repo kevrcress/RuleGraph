@@ -12,9 +12,49 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum, IngestFileCheckpoint
+from app.models.ingest_source import IngestSource
 from app.models.rule import Rule, RuleStatusEnum, Service, RuleService, RuleVersion
 
 logger = logging.getLogger(__name__)
+
+
+async def latest_run_for_source(db: AsyncSession, source_name: str) -> Optional[IngestRun]:
+    """Return a source's most recent IngestRun, or None.
+
+    Linkage is by ``source_name`` (ingest_runs has no source FK). "Latest" is
+    ``started_at DESC, id DESC`` — the ``id`` tiebreaker makes the result deterministic
+    when two runs share a started_at. Single source of truth for the recovery sweep, the
+    resume gate, and (matching the ordering) the batched list lookup. See IV-016.
+    """
+    return (await db.execute(
+        select(IngestRun)
+        .where(IngestRun.source_name == source_name)
+        .order_by(IngestRun.started_at.desc(), IngestRun.id.desc())
+        .limit(1)
+    )).scalars().first()
+
+
+def is_run_resumable(run_status: Optional[str], src_ingest_status: str) -> bool:
+    """Whether a run is incomplete enough to resume.
+
+    A run is "incomplete" when its status is still ``running``/``completed_with_errors``,
+    or when the source itself is in an ``error``/``ingesting`` state. Shared by the
+    server-side resume gate (``find_resumable_run``) and the status route's ``can_resume``
+    flag so the UI's enable-state and the server's accept/reject can never drift apart.
+    """
+    if run_status is None:
+        return False
+    return run_status in ("running", "completed_with_errors") or src_ingest_status in ("error", "ingesting")
+
+
+async def find_resumable_run(db: AsyncSession, src: IngestSource) -> Optional[IngestRun]:
+    """Return the source's latest IngestRun if it is resumable, else None."""
+    run = await latest_run_for_source(db, src.name)
+    if run is None:
+        return None
+    if is_run_resumable(run.status, src.ingest_status):
+        return run
+    return None
 
 # Retry configuration per error source
 RETRY_CONFIG = {
@@ -109,6 +149,25 @@ async def get_done_files(db: AsyncSession, run_id: uuid.UUID) -> set[str]:
         .where(IngestFileCheckpoint.status == "done")
     )
     return set(result.scalars().all())
+
+
+async def count_checkpoint_tallies(db: AsyncSession, run_id: uuid.UUID) -> tuple[int, int]:
+    """Return ``(done_count, error_count)`` from a run's checkpoints in one query.
+
+    The persisted ``IngestRun.files_processed``/``files_errored`` are derived from this
+    so a run completed across a crash + resume reports the cross-attempt totals, not just
+    the final pass's local counters (the resume pass starts both counters at 0). Used by
+    both the normal completion path and ``_finalize_empty_resume``. See DEC-045 / IV-001.
+    """
+    from sqlalchemy import func
+
+    rows = (await db.execute(
+        select(IngestFileCheckpoint.status, func.count())
+        .where(IngestFileCheckpoint.ingest_run_id == run_id)
+        .group_by(IngestFileCheckpoint.status)
+    )).all()
+    by_status = {status: count for status, count in rows}
+    return by_status.get("done", 0), by_status.get("error", 0)
 
 
 async def log_error(

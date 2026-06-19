@@ -344,6 +344,19 @@ GET /admin/settings / PUT
 GET /admin/synonyms / approve / reject
 ```
 
+**Sources (Admin)** — configure repos and drive ingest. List responses carry per-source
+run progress: `run_status`, `done_file_count`/`total_file_count`, `run_is_stale`, and
+`can_resume` (server-authoritative — the UI enables Resume from this flag).
+```
+GET    /admin/sources                 — list sources + latest-run progress
+POST   /admin/sources                 — add a source
+PUT    /admin/sources/{id}            — update a source
+DELETE /admin/sources/{id}            — remove a source
+POST   /admin/sources/{id}/ingest     — enqueue a fresh ingest (arq worker)
+POST   /admin/sources/{id}/resume     — resume the latest incomplete run, skipping done files
+GET    /admin/ingest-runs/{id}        — run detail
+```
+
 ---
 
 ## Project structure

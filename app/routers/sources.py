@@ -24,9 +24,8 @@ from app.models.ingest_source import IngestSource
 from app.routers._deps import require_arq_pool
 from app.services import ingest_service
 from app.services.settings_service import get_ingest_stale_threshold
-from app.tasks.ingest_job import run_ingest_impl, _find_resumable_run, is_run_resumable
 from app.tasks.recovery import staleness_exceeded
-from app.tasks.worker import INGEST_QUEUE_NAME
+from app.tasks.queue import INGEST_QUEUE_NAME
 from app.schemas.ingest_source import (
     IngestSourceCreate,
     IngestSourceResponse,
@@ -85,7 +84,7 @@ async def _runs_progress_for_sources(db: AsyncSession, srcs: list[IngestSource])
         return {}
 
     names = [s.name for s in srcs]
-    # Latest run per source in one query (DISTINCT ON), matching _find_resumable_run's ordering.
+    # Latest run per source in one query (DISTINCT ON), matching latest_run_for_source's ordering.
     latest_runs = (await db.execute(
         select(IngestRun)
         .where(IngestRun.source_name.in_(names))
@@ -126,13 +125,19 @@ async def _runs_progress_for_sources(db: AsyncSession, srcs: list[IngestSource])
             continue
         done = done_by_run.get(run.id, 0)
         total = total_by_run.get(run.id, 0)
-        last_progress = last_progress_by_run.get(run.id) or run.started_at
+        # Mirror recovery.is_run_stale: newest of checkpoint progress, the Batch poll
+        # heartbeat, else started_at — so the list view's staleness agrees with the
+        # cron sweep even while a batch is mid-poll (DEC-045).
+        progress_candidates = [
+            ts for ts in (last_progress_by_run.get(run.id), run.last_heartbeat_at) if ts is not None
+        ]
+        last_progress = max(progress_candidates) if progress_candidates else run.started_at
         out[src.name] = {
             "run_status": run.status,
             "done": done,
             "total": total,
             "run_is_stale": staleness_exceeded(last_progress, threshold, now),
-            "can_resume": is_run_resumable(run.status, src.ingest_status) and done < total,
+            "can_resume": ingest_service.is_run_resumable(run.status, src.ingest_status) and done < total,
         }
     return out
 
@@ -233,19 +238,9 @@ async def delete_source(
 
 # ── Ingest trigger ────────────────────────────────────────────────────────────
 
-# NOTE: the ingest job body now lives in app/tasks/ingest_job.run_ingest_impl and
-# runs in the arq worker process (see app/tasks/worker.py). _find_resumable_run is
-# imported from there. _run_source_ingest is kept as a thin delegate for callers
-# that still invoke the impl directly (e.g. app/routers/ingest.py).
-
-
-async def _run_source_ingest(source_id: str, resume: bool = False) -> None:
-    """Thin delegate to the relocated ingest implementation.
-
-    Retained so direct callers (and the legacy BackgroundTasks path) keep working;
-    new enqueues go through the arq worker via app.state.arq_pool.enqueue_job.
-    """
-    await run_ingest_impl(source_id, resume)
+# The ingest job body lives in app/tasks/ingest_job.run_ingest_impl and runs in the
+# arq worker process (see app/tasks/worker.py); routers only enqueue jobs. The shared
+# resume/staleness predicates live in app/services/ingest_service.
 
 
 @router.post("/{source_id}/ingest", response_model=IngestTriggerResponse)
@@ -294,7 +289,7 @@ async def resume_ingest(
 
     pool = require_arq_pool(request)
 
-    resume_run = await _find_resumable_run(db, src)
+    resume_run = await ingest_service.find_resumable_run(db, src)
     if resume_run is None:
         raise HTTPException(status_code=409, detail="No resumable ingest run for this source")
 

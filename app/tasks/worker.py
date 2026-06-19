@@ -12,14 +12,10 @@ from arq.connections import RedisSettings
 from app.config import settings
 from app.database import async_session_factory
 from app.tasks.ingest_job import run_ingest_impl
+from app.tasks.queue import INGEST_QUEUE_NAME
 from app.tasks.recovery import reset_stale_ingests
 
 logger = logging.getLogger(__name__)
-
-# Shared queue name: the worker consumes from this queue and every enqueue site
-# must target it via ``_queue_name``. Without this, ``enqueue_job`` defaults to
-# arq's ``arq:queue`` and jobs are never consumed by this worker.
-INGEST_QUEUE_NAME = "rulegraph:tasks"
 
 
 async def process_ado_webhook(ctx, payload: dict) -> None:

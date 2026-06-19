@@ -28,7 +28,6 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ingest.complexity import score_complexity
@@ -40,7 +39,7 @@ from app.ingest.extractor import (
     ExtractedRule,
 )
 from app.graph.cognee_client import add_to_graph
-from app.models.ingest import IngestRun, IngestFileCheckpoint
+from app.models.ingest import IngestRun
 from app.services import ingest_service
 
 logger = logging.getLogger(__name__)
@@ -70,7 +69,19 @@ def derive_module_from_path(file_path: str, repo_name: str) -> str:
     return repo_name
 
 _POLL_INTERVAL = 30       # seconds between status checks
-_MAX_POLLS = 240          # 240 × 30s = 2 hours maximum wait
+
+
+def _max_polls() -> int:
+    """Batch poll budget in poll-iterations, derived from config so it stays reconciled.
+
+    budget = (job_timeout − reserve) // interval, kept strictly below the arq
+    job_timeout (reserve covers clone + scoring + results streaming) so the poll
+    loop raises its own TimeoutError and flushes checkpoints before arq kills the
+    worker mid-write. See DEC-045 for the full timing model.
+    """
+    from app.config import settings
+    budget = settings.ingest_job_timeout_seconds - settings.ingest_batch_poll_reserve_seconds
+    return max(1, budget // _POLL_INTERVAL)
 
 
 async def _finalize_empty_resume(db: AsyncSession, run: IngestRun, last_file: str | None) -> None:
@@ -79,17 +90,11 @@ async def _finalize_empty_resume(db: AsyncSession, run: IngestRun, last_file: st
     Counts the run's existing done/error checkpoints so the run's tallies reflect the
     work already performed by the prior (crashed) attempt rather than zeroing them out.
     """
-    done = await ingest_service.get_done_files(db, run.id)
-    errored_count = (await db.execute(
-        select(func.count())
-        .select_from(IngestFileCheckpoint)
-        .where(IngestFileCheckpoint.ingest_run_id == run.id)
-        .where(IngestFileCheckpoint.status == "error")
-    )).scalar_one()
+    done_count, errored_count = await ingest_service.count_checkpoint_tallies(db, run.id)
     await ingest_service.complete_run(
         db, run.id,
         status="completed" if errored_count == 0 else "completed_with_errors",
-        files_processed=len(done),
+        files_processed=done_count,
         files_errored=errored_count,
         last_processed_file=last_file,
     )
@@ -124,6 +129,7 @@ async def batch_ingest_files(
     from app.services.settings_service import (
         is_claude_enabled, get_complexity_threshold,
         get_anthropic_api_key, get_litellm_base_url,
+        get_llm_request_timeout,
     )
 
     if not await is_claude_enabled(db):
@@ -286,8 +292,13 @@ async def batch_ingest_files(
                     await db.rollback()
 
     else:
-        # Batch API path (Anthropic only)
-        _client = _get_client(await get_anthropic_api_key(db))
+        # Batch API path (Anthropic only). Pass the configured request timeout so a
+        # hung Batches control-plane call (create/retrieve/results) can't block the
+        # worker indefinitely (matches the sequential path in extractor.extract_rules).
+        _client = _get_client(
+            await get_anthropic_api_key(db),
+            timeout=await get_llm_request_timeout(db),
+        )
 
         # Create the run BEFORE submitting so we can persist the Anthropic batch.id
         # immediately on submit (decision #6 — re-attach on resume to avoid double spend).
@@ -355,10 +366,14 @@ async def batch_ingest_files(
             logger.info("Batch %s submitted — polling every %ds for completion", batch.id, _POLL_INTERVAL)
 
         if batch.processing_status != "ended":
-            for poll_num in range(_MAX_POLLS):
+            max_polls = _max_polls()
+            for poll_num in range(max_polls):
                 await asyncio.sleep(_POLL_INTERVAL)
                 batch = await _client.messages.batches.retrieve(batch.id)
                 run.batch_status = batch.processing_status
+                # Heartbeat: prove the run is alive during the checkpoint-free poll phase
+                # so the staleness sweep doesn't reset a still-live batch (DEC-045).
+                run.last_heartbeat_at = datetime.now(timezone.utc)
                 await db.commit()
                 elapsed_min = (poll_num + 1) * _POLL_INTERVAL // 60
                 logger.debug("Batch %s status: %s (poll %d)", batch.id, batch.processing_status, poll_num + 1)
@@ -368,7 +383,7 @@ async def batch_ingest_files(
                     await _set_progress(f"AI processing… ({elapsed_min}m elapsed)")
             else:
                 raise TimeoutError(
-                    f"Batch {batch.id} did not complete within {_MAX_POLLS * _POLL_INTERVAL}s"
+                    f"Batch {batch.id} did not complete within {max_polls * _POLL_INTERVAL}s"
                 )
 
         await _set_progress("Processing AI results…")
@@ -532,18 +547,22 @@ async def batch_ingest_files(
     except Exception as e:
         logger.warning("Wiki generation failed for '%s' (non-fatal): %s", source_name, e)
 
+    # Derive the persisted run tallies from checkpoints (not the local pass counters):
+    # on a resume the counters start at 0 and count only this pass, so they'd
+    # under-report the cross-attempt totals. See DEC-045 / IV-001.
+    done_count, errored_count = await ingest_service.count_checkpoint_tallies(db, run.id)
     await ingest_service.complete_run(
         db, run.id,
-        status="completed" if not errors else "completed_with_errors",
-        files_processed=files_processed,
-        files_errored=files_errored,
+        status="completed" if errored_count == 0 else "completed_with_errors",
+        files_processed=done_count,
+        files_errored=errored_count,
         last_processed_file=last_file,
     )
     await db.commit()
 
     logger.info(
-        "Batch ingest complete for '%s': %d rules from %d files (%d errors)",
-        source_name, rules_extracted, files_processed, len(errors),
+        "Batch ingest complete for '%s': %d rules from %d files (%d errored, %d this pass)",
+        source_name, rules_extracted, done_count, errored_count, files_processed,
     )
     return {
         "rules_extracted": rules_extracted,

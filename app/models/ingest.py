@@ -72,6 +72,9 @@ class IngestRun(Base):
     batch_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     batch_submitted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     batch_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Bumped on every Batch poll so an actively-polling run (which writes no per-file
+    # checkpoints during the poll phase) is not misjudged as stale. See DEC-045.
+    last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class IngestFileCheckpoint(Base):
