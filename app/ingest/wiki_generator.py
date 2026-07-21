@@ -60,13 +60,17 @@ async def generate_wiki_page(
         return None
 
     if db is not None:
-        from app.services.settings_service import is_claude_enabled, get_anthropic_api_key
+        from app.services.settings_service import (
+            is_claude_enabled, get_anthropic_api_key, get_litellm_base_url, get_complex_model,
+        )
         if not await is_claude_enabled(db):
             logger.info("Claude disabled — skipping wiki generation for '%s'", module)
             return None
-        client = _get_client(await get_anthropic_api_key(db))
+        client = _get_client(await get_anthropic_api_key(db), base_url=await get_litellm_base_url(db))
+        model = await get_complex_model(db)
     else:
         client = _ensure_legacy_client()
+        model = settings.complex_model
 
     parts = [f"Module: {module}\n"]
     if module_summary:
@@ -79,12 +83,12 @@ async def generate_wiki_page(
 
     try:
         response = await client.messages.create(
-            model=settings.complex_model,
+            model=model,
             max_tokens=2048,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_content}],
         )
-        return response.content[0].text if response.content else None
+        return next((b.text for b in response.content if b.type == "text"), None) if response.content else None
     except Exception as exc:
         logger.warning("Wiki generation failed for '%s' (non-fatal): %s", module, exc)
         return None
