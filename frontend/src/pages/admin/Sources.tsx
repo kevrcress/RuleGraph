@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import Layout from "../../components/Layout";
 import { useSources, useCreateSource, useUpdateSource, useDeleteSource, useTriggerIngest, useResumeSource, type IngestSource } from "../../api/sources";
 
@@ -36,6 +36,12 @@ function IngestStatusBadge({ source }: { source: IngestSource }) {
             {source.ingest_progress}
           </div>
         )}
+        <Link
+          to={`/admin/sources/${source.id}/ingest-status`}
+          style={{ fontSize: 11, color: "var(--accent)", marginTop: 4, display: "inline-block" }}
+        >
+          View file status →
+        </Link>
       </div>
     );
   }
@@ -50,13 +56,29 @@ function IngestStatusBadge({ source }: { source: IngestSource }) {
             {source.ingest_error}
           </div>
         )}
+        <Link
+          to={`/admin/sources/${source.id}/ingest-status`}
+          style={{ fontSize: 11, color: "var(--accent)", marginTop: 4, display: "inline-block" }}
+        >
+          View file status →
+        </Link>
       </div>
     );
   }
   return (
-    <span style={{ fontSize: 12, padding: "2px 9px", borderRadius: 999, background: source.status === "active" ? "var(--ok-soft)" : "var(--panel2)", color: source.status === "active" ? "var(--ok)" : "var(--ink3)", fontWeight: 500 }}>
-      {source.status}
-    </span>
+    <div>
+      <span style={{ fontSize: 12, padding: "2px 9px", borderRadius: 999, background: source.status === "active" ? "var(--ok-soft)" : "var(--panel2)", color: source.status === "active" ? "var(--ok)" : "var(--ink3)", fontWeight: 500 }}>
+        {source.status}
+      </span>
+      {source.done_file_count > 0 && (
+        <Link
+          to={`/admin/sources/${source.id}/ingest-status`}
+          style={{ fontSize: 11, color: "var(--accent)", marginTop: 4, display: "block" }}
+        >
+          View file status →
+        </Link>
+      )}
+    </div>
   );
 }
 

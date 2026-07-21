@@ -109,7 +109,7 @@ export const useTriggerIngest = () => {
   return useMutation({
     mutationFn: async (sourceId: string) => {
       const res = await apiClient.post(`/admin/sources/${sourceId}/ingest`);
-      return res.data as { status: string; source_name: string; message: string };
+      return res.data as { status: string; source_name: string; message: string; run_id?: string };
     },
     onSuccess: () => {
       // Invalidate sources so last_ingested_at refreshes
@@ -123,7 +123,7 @@ export const useResumeSource = () => {
   return useMutation({
     mutationFn: async (sourceId: string) => {
       const res = await apiClient.post(`/admin/sources/${sourceId}/resume`);
-      return res.data as { status: string; source_name: string; message: string };
+      return res.data as { status: string; source_name: string; message: string; run_id?: string };
     },
     onSuccess: () => {
       // Invalidate sources so progress fields refresh
