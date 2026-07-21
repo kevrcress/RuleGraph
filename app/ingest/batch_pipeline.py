@@ -427,7 +427,7 @@ async def batch_ingest_files(
             # the sequential path — mark the file "error" in its own transaction and continue.
             try:
                 message = result.result.message
-                response_text = message.content[0].text if message.content else ""
+                response_text = next((b.text for b in message.content if b.type == "text"), "")
                 raw_rules, file_summary = _parse_llm_response(response_text)
 
                 extracted: list[ExtractedRule] = []

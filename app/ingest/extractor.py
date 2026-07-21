@@ -260,7 +260,7 @@ async def extract_rules(
             ],
         )
 
-        response_text = response.content[0].text if response.content else ""
+        response_text = next((b.text for b in response.content if b.type == "text"), "")
         raw_rules, file_summary = _parse_llm_response(response_text)
 
         extracted = []
