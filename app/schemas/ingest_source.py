@@ -63,3 +63,4 @@ class IngestTriggerResponse(BaseModel):
     status: str
     source_name: str
     message: str
+    run_id: Optional[str] = None

@@ -26,6 +26,11 @@ from app.services import ingest_service
 from app.services.settings_service import get_ingest_stale_threshold
 from app.tasks.recovery import staleness_exceeded
 from app.tasks.queue import INGEST_QUEUE_NAME
+from app.schemas.ingest import (
+    IngestFileCheckpointResponse,
+    IngestRunResponse,
+    PaginatedCheckpoints,
+)
 from app.schemas.ingest_source import (
     IngestSourceCreate,
     IngestSourceResponse,
@@ -142,6 +147,13 @@ async def _runs_progress_for_sources(db: AsyncSession, srcs: list[IngestSource])
     return out
 
 
+async def _get_source_by_id(db: AsyncSession, source_id: uuid.UUID) -> IngestSource:
+    src = (await db.execute(select(IngestSource).where(IngestSource.id == source_id))).scalar_one_or_none()
+    if src is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return src
+
+
 # ── CRUD ─────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=PaginatedSources)
@@ -197,9 +209,7 @@ async def update_source(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
-    src = (await db.execute(select(IngestSource).where(IngestSource.id == source_id))).scalar_one_or_none()
-    if not src:
-        raise HTTPException(status_code=404, detail="Source not found")
+    src = await _get_source_by_id(db, source_id)
 
     if body.name is not None:
         src.name = body.name
@@ -229,9 +239,7 @@ async def delete_source(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
-    src = (await db.execute(select(IngestSource).where(IngestSource.id == source_id))).scalar_one_or_none()
-    if not src:
-        raise HTTPException(status_code=404, detail="Source not found")
+    src = await _get_source_by_id(db, source_id)
     await db.delete(src)
     await db.commit()
 
@@ -250,9 +258,7 @@ async def trigger_ingest(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
-    src = (await db.execute(select(IngestSource).where(IngestSource.id == source_id))).scalar_one_or_none()
-    if not src:
-        raise HTTPException(status_code=404, detail="Source not found")
+    src = await _get_source_by_id(db, source_id)
     if src.status != "active":
         raise HTTPException(status_code=400, detail="Source is not active")
     if src.ingest_status == "ingesting":
@@ -281,9 +287,7 @@ async def resume_ingest(
     current_user: dict = Depends(require_roles("admin")),
 ):
     """Resume the source's latest incomplete ingest run, skipping already-done files."""
-    src = (await db.execute(select(IngestSource).where(IngestSource.id == source_id))).scalar_one_or_none()
-    if not src:
-        raise HTTPException(status_code=404, detail="Source not found")
+    src = await _get_source_by_id(db, source_id)
     if src.ingest_status == "ingesting":
         raise HTTPException(status_code=409, detail="Ingest already in progress for this source")
 
@@ -300,10 +304,104 @@ async def resume_ingest(
     return IngestTriggerResponse(
         status="resumed",
         source_name=src.name,
+        run_id=str(resume_run.id),
         message=(
             f"Resuming ingest of '{src.name}' — skipping files already processed. "
             "This runs in the background — check /rules in a minute or two."
         ),
+    )
+
+
+@router.post("/{source_id}/retry-errors", response_model=IngestTriggerResponse)
+async def retry_errors_ingest(
+    source_id: uuid.UUID,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    """Reset all errored file checkpoints to pending and re-queue the ingest worker."""
+    src = await _get_source_by_id(db, source_id)
+    if src.ingest_status == "ingesting":
+        raise HTTPException(status_code=409, detail="Ingest already in progress for this source")
+
+    run = await ingest_service.latest_run_for_source(db, src.name)
+    if run is None:
+        raise HTTPException(status_code=409, detail="No ingest run found for this source")
+
+    pool = require_arq_pool(request)
+
+    reset_count = await ingest_service.reset_error_checkpoints_for_retry(db, run)
+    if reset_count == 0:
+        raise HTTPException(status_code=400, detail="No errored files to retry for this source")
+
+    await db.commit()
+
+    await pool.enqueue_job(
+        "run_source_ingest", str(source_id), True, _queue_name=INGEST_QUEUE_NAME
+    )
+
+    return IngestTriggerResponse(
+        status="queued",
+        source_name=src.name,
+        run_id=str(run.id),
+        message=(
+            f"Retrying {reset_count} errored file(s) for '{src.name}'. "
+            "This runs in the background — refresh in a moment to see progress."
+        ),
+    )
+
+
+@router.get("/{source_id}/ingest-runs/latest/files", response_model=PaginatedCheckpoints)
+async def get_latest_ingest_files(
+    source_id: uuid.UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_roles("admin")),
+):
+    src = await _get_source_by_id(db, source_id)
+
+    run_result = await db.execute(
+        select(IngestRun)
+        .where(IngestRun.source_name == src.name)
+        .order_by(IngestRun.started_at.desc(), IngestRun.id.desc())
+        .limit(1)
+    )
+    run = run_result.scalar_one_or_none()
+
+    if run is None:
+        return PaginatedCheckpoints(items=[], total=0, run=None)
+
+    count_result = await db.execute(
+        select(func.count()).where(IngestFileCheckpoint.ingest_run_id == run.id)
+    )
+    total = count_result.scalar_one()
+
+    errored_count_result = await db.execute(
+        select(func.count()).where(
+            IngestFileCheckpoint.ingest_run_id == run.id,
+            IngestFileCheckpoint.status == "error",
+        )
+    )
+    live_errored = errored_count_result.scalar_one()
+
+    offset = (page - 1) * page_size
+    items_result = await db.execute(
+        select(IngestFileCheckpoint)
+        .where(IngestFileCheckpoint.ingest_run_id == run.id)
+        .order_by(IngestFileCheckpoint.file_path.asc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    items = items_result.scalars().all()
+
+    run_response = IngestRunResponse.model_validate(run)
+    run_response.files_errored = live_errored
+
+    return PaginatedCheckpoints(
+        items=[IngestFileCheckpointResponse.model_validate(c) for c in items],
+        total=total,
+        run=run_response,
     )
 
 
@@ -315,8 +413,6 @@ async def get_source(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
-    src = (await db.execute(select(IngestSource).where(IngestSource.id == source_id))).scalar_one_or_none()
-    if not src:
-        raise HTTPException(status_code=404, detail="Source not found")
+    src = await _get_source_by_id(db, source_id)
     progress = await _runs_progress_for_sources(db, [src])
     return _to_response(src, progress.get(src.name))

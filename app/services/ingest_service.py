@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum, IngestFileCheckpoint
@@ -55,6 +55,29 @@ async def find_resumable_run(db: AsyncSession, src: IngestSource) -> Optional[In
     if is_run_resumable(run.status, src.ingest_status):
         return run
     return None
+
+
+async def reset_error_checkpoints_for_retry(db: AsyncSession, run: IngestRun) -> int:
+    """Reset all error checkpoints to pending and mark the run as running again.
+
+    Returns the count of checkpoints reset. Returns 0 if no error checkpoints exist
+    (caller should treat this as a 400 / no-op).
+
+    The caller MUST await db.commit() after this call and BEFORE enqueuing the arq job.
+    """
+    result = await db.execute(
+        sa_update(IngestFileCheckpoint)
+        .where(
+            IngestFileCheckpoint.ingest_run_id == run.id,
+            IngestFileCheckpoint.status == "error",
+        )
+        .values(status="pending")
+    )
+    count = result.rowcount
+    if count > 0:
+        run.status = "running"
+    return count
+
 
 # Retry configuration per error source
 RETRY_CONFIG = {

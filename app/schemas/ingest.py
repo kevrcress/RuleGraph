@@ -35,3 +35,29 @@ class PaginatedIngestErrors(BaseModel):
     """Paginated response for ingest errors."""
     items: list[IngestErrorItem]
     total: int
+
+
+class IngestRunResponse(BaseModel):
+    id: uuid.UUID
+    source_name: str
+    status: Optional[str] = None
+    batch_status: Optional[str] = None
+    files_processed: int = 0
+    files_errored: int = 0
+    started_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+class IngestFileCheckpointResponse(BaseModel):
+    id: uuid.UUID
+    file_path: str
+    status: str  # pending | processing | done | error
+    error_message: Optional[str] = None
+    processed_at: Optional[datetime] = None
+    model_config = {"from_attributes": True}
+
+
+class PaginatedCheckpoints(BaseModel):
+    items: list[IngestFileCheckpointResponse]
+    total: int
+    run: Optional[IngestRunResponse] = None
