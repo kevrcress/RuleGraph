@@ -25,6 +25,7 @@ Flow (proxy / sequential mode):
 """
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +39,7 @@ from app.ingest.extractor import (
     ExtractedRule,
 )
 from app.graph.cognee_client import add_to_graph
+from app.models.ingest import IngestRun
 from app.services import ingest_service
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,36 @@ def derive_module_from_path(file_path: str, repo_name: str) -> str:
     return repo_name
 
 _POLL_INTERVAL = 30       # seconds between status checks
-_MAX_POLLS = 240          # 240 × 30s = 2 hours maximum wait
+
+
+def _max_polls() -> int:
+    """Batch poll budget in poll-iterations, derived from config so it stays reconciled.
+
+    budget = (job_timeout − reserve) // interval, kept strictly below the arq
+    job_timeout (reserve covers clone + scoring + results streaming) so the poll
+    loop raises its own TimeoutError and flushes checkpoints before arq kills the
+    worker mid-write. See DEC-045 for the full timing model.
+    """
+    from app.config import settings
+    budget = settings.ingest_job_timeout_seconds - settings.ingest_batch_poll_reserve_seconds
+    return max(1, budget // _POLL_INTERVAL)
+
+
+async def _finalize_empty_resume(db: AsyncSession, run: IngestRun, last_file: str | None) -> None:
+    """Mark an existing run complete when a resume finds no remaining files to process.
+
+    Counts the run's existing done/error checkpoints so the run's tallies reflect the
+    work already performed by the prior (crashed) attempt rather than zeroing them out.
+    """
+    done_count, errored_count = await ingest_service.count_checkpoint_tallies(db, run.id)
+    await ingest_service.complete_run(
+        db, run.id,
+        status="completed" if errored_count == 0 else "completed_with_errors",
+        files_processed=done_count,
+        files_errored=errored_count,
+        last_processed_file=last_file,
+    )
+    await db.commit()
 
 
 async def batch_ingest_files(
@@ -75,6 +106,8 @@ async def batch_ingest_files(
     files: list[dict],
     source_name: str,
     src=None,
+    resume_run: IngestRun | None = None,
+    resume: bool = False,
 ) -> dict:
     """
     Ingest a list of files using the Anthropic Batches API (direct) or sequential
@@ -96,6 +129,7 @@ async def batch_ingest_files(
     from app.services.settings_service import (
         is_claude_enabled, get_complexity_threshold,
         get_anthropic_api_key, get_litellm_base_url,
+        get_llm_request_timeout,
     )
 
     if not await is_claude_enabled(db):
@@ -148,99 +182,211 @@ async def batch_ingest_files(
             len(requests_map), source_name,
         )
 
-        run = await ingest_service.start_run(db, source_name)
-        await db.commit()
+        if resume and resume_run is not None:
+            run = resume_run
+        else:
+            run = await ingest_service.start_run(db, source_name)
+            await db.commit()
+
+        if resume:
+            done = await ingest_service.get_done_files(db, run.id)
+            requests_map = {cid: fi for cid, fi in requests_map.items() if fi["path"] not in done}
+            if not requests_map:
+                logger.info(
+                    "Resume for '%s': all files already done — nothing to process", source_name
+                )
+                await _finalize_empty_resume(db, run, last_file=None)
+                return {
+                    "rules_extracted": 0,
+                    "files_processed": 0,
+                    "files_skipped": files_skipped,
+                    "errors": [],
+                }
 
         for custom_id, file_info in requests_map.items():
             filename = file_info["path"]
             last_file = filename
             await _set_progress(f"Processing {filename}…")
 
-            result = await extract_rules(file_info["content"], file_info["complexity"], db)
+            try:
+                result = await extract_rules(file_info["content"], file_info["complexity"], db)
 
-            if result.error:
-                logger.error("Extraction error for '%s': %s", filename, result.error)
-                errors.append(f"{filename}: {result.error}")
-                files_errored += 1
-                await ingest_service.log_error(
-                    db=db,
-                    run_id=run.id,
-                    source_name=source_name,
-                    file_path=filename,
-                    error_source="llm_extraction",
-                    error_message=result.error,
-                    raw_content=file_info["content"][:5000],
-                )
-                continue
-
-            extracted = result.rules
-            file_summary = result.summary
-            logger.info("Parsed %d rules from '%s'", len(extracted), filename)
-
-            cognee_node_id = await add_to_graph(file_info["content"], dataset_name="rulegraph", db=db)
-
-            module = derive_module_from_path(filename, source_name)
-            if module not in service_cache:
-                service_cache[module] = await ingest_service.get_or_create_service(db, module)
-                await db.commit()
-            file_service = service_cache[module]
-
-            if file_summary:
-                module_file_summaries.setdefault(module, []).append(file_summary)
-
-            for rule in extracted:
-                try:
-                    await ingest_service.store_rule(
+                if result.error:
+                    logger.error("Extraction error for '%s': %s", filename, result.error)
+                    errors.append(f"{filename}: {result.error}")
+                    files_errored += 1
+                    await ingest_service.log_error(
                         db=db,
-                        title=rule.title,
-                        definition=rule.definition,
-                        confidence=rule.confidence,
-                        source_type="code",
-                        cognee_node_id=cognee_node_id,
-                        service_id=file_service.id,
-                        source_file=filename,
+                        run_id=run.id,
+                        source_name=source_name,
+                        file_path=filename,
+                        error_source="llm_extraction",
+                        error_message=result.error,
+                        raw_content=file_info["content"][:5000],
                     )
-                    rules_extracted += 1
-                except Exception as exc:
-                    logger.error("Failed to store rule '%s': %s", rule.title, exc)
-                    errors.append(str(exc))
+                    await ingest_service.mark_file_checkpoint(db, run.id, filename, "error", result.error)
+                    await db.commit()
+                    continue
 
-            files_processed += 1
-            await db.commit()
+                extracted = result.rules
+                file_summary = result.summary
+                logger.info("Parsed %d rules from '%s'", len(extracted), filename)
+
+                cognee_node_id = await add_to_graph(file_info["content"], dataset_name="rulegraph", db=db)
+
+                module = derive_module_from_path(filename, source_name)
+                if module not in service_cache:
+                    service_cache[module] = await ingest_service.get_or_create_service(db, module)
+                    await db.commit()
+                file_service = service_cache[module]
+
+                if file_summary:
+                    module_file_summaries.setdefault(module, []).append(file_summary)
+
+                file_store_failed = False
+                for rule in extracted:
+                    try:
+                        await ingest_service.store_rule(
+                            db=db,
+                            title=rule.title,
+                            definition=rule.definition,
+                            confidence=rule.confidence,
+                            source_type="code",
+                            cognee_node_id=cognee_node_id,
+                            service_id=file_service.id,
+                            source_file=filename,
+                        )
+                        rules_extracted += 1
+                    except Exception as exc:
+                        logger.error("Failed to store rule '%s': %s", rule.title, exc)
+                        errors.append(str(exc))
+                        file_store_failed = True
+
+                # Only checkpoint "done" when the file's rules actually persisted. If any
+                # store failed, checkpoint "error" so a Resume reprocesses the file (store_rule
+                # is an idempotent upsert, so already-stored rules are not duplicated).
+                if file_store_failed:
+                    files_errored += 1
+                    await ingest_service.mark_file_checkpoint(
+                        db, run.id, filename, "error", "one or more rules failed to store"
+                    )
+                else:
+                    files_processed += 1
+                    await ingest_service.mark_file_checkpoint(db, run.id, filename, "done")
+                await db.commit()
+
+            except Exception as exc:
+                logger.error("Unexpected error processing '%s': %s", filename, exc)
+                errors.append(f"{filename}: {exc}")
+                files_errored += 1
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                # Write the error checkpoint in its OWN transaction so it survives
+                # the rollback of the failed file's writes.
+                try:
+                    await ingest_service.mark_file_checkpoint(db, run.id, filename, "error", str(exc))
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
 
     else:
-        # Batch API path (Anthropic only)
+        # Batch API path (Anthropic only). Pass the configured request timeout so a
+        # hung Batches control-plane call (create/retrieve/results) can't block the
+        # worker indefinitely (matches the sequential path in extractor.extract_rules).
+        _client = _get_client(
+            await get_anthropic_api_key(db),
+            timeout=await get_llm_request_timeout(db),
+        )
+
+        # Create the run BEFORE submitting so we can persist the Anthropic batch.id
+        # immediately on submit (decision #6 — re-attach on resume to avoid double spend).
+        # On resume, reuse the prior incomplete run so its done-file checkpoints apply
+        # and new checkpoints attach to the same run.id.
+        if resume and resume_run is not None:
+            run = resume_run
+        else:
+            run = await ingest_service.start_run(db, source_name)
+            await db.commit()
+
+        if resume:
+            done = await ingest_service.get_done_files(db, run.id)
+            requests_map = {cid: fi for cid, fi in requests_map.items() if fi["path"] not in done}
+            if not requests_map:
+                logger.info(
+                    "Resume for '%s': all files already done — nothing to submit", source_name
+                )
+                await _finalize_empty_resume(db, run, last_file=None)
+                return {
+                    "rules_extracted": 0,
+                    "files_processed": 0,
+                    "files_skipped": files_skipped,
+                    "errors": [],
+                }
+
         batch_requests = [
             build_batch_request(cid, fi["content"], fi["complexity"], threshold)
             for cid, fi in requests_map.items()
         ]
 
-        _client = _get_client(await get_anthropic_api_key(db))
-        await _set_progress(f"Scoring complete — submitting {len(batch_requests)} file(s) to AI…")
-        logger.info("Submitting batch of %d files for source '%s'", len(batch_requests), source_name)
+        # Resume guard: if a prior run handed us an in-flight batch_id, re-attach to it
+        # instead of creating a new batch (avoids double spend). On retrieve failure or an
+        # already-ended status, fall through to normal create/results handling.
+        batch = None
+        if resume_run is not None and resume_run.batch_id and resume_run.batch_status != "ended":
+            try:
+                batch = await _client.messages.batches.retrieve(resume_run.batch_id)
+                run.batch_id = batch.id
+                run.batch_submitted_at = resume_run.batch_submitted_at
+                run.batch_status = batch.processing_status
+                await db.commit()
+                await _set_progress("Re-attached to in-flight AI batch — waiting for results…")
+                logger.info(
+                    "Re-attached to batch %s (status %s) for source '%s' — skipping create",
+                    batch.id, batch.processing_status, source_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Re-attach to batch %s failed (%s) — submitting a fresh batch",
+                    resume_run.batch_id, exc,
+                )
+                batch = None
 
-        batch = await _client.messages.batches.create(requests=batch_requests)
-        await _set_progress(f"AI batch submitted ({len(batch_requests)} file(s)) — waiting for results…")
-        logger.info("Batch %s submitted — polling every %ds for completion", batch.id, _POLL_INTERVAL)
+        if batch is None:
+            await _set_progress(f"Scoring complete — submitting {len(batch_requests)} file(s) to AI…")
+            logger.info("Submitting batch of %d files for source '%s'", len(batch_requests), source_name)
 
-        for poll_num in range(_MAX_POLLS):
-            await asyncio.sleep(_POLL_INTERVAL)
-            batch = await _client.messages.batches.retrieve(batch.id)
-            elapsed_min = (poll_num + 1) * _POLL_INTERVAL // 60
-            logger.debug("Batch %s status: %s (poll %d)", batch.id, batch.processing_status, poll_num + 1)
-            if batch.processing_status == "ended":
-                break
-            if elapsed_min > 0:
-                await _set_progress(f"AI processing… ({elapsed_min}m elapsed)")
-        else:
-            raise TimeoutError(
-                f"Batch {batch.id} did not complete within {_MAX_POLLS * _POLL_INTERVAL}s"
-            )
+            batch = await _client.messages.batches.create(requests=batch_requests)
+            run.batch_id = batch.id
+            run.batch_submitted_at = datetime.now(timezone.utc)
+            run.batch_status = batch.processing_status
+            await db.commit()
+            await _set_progress(f"AI batch submitted ({len(batch_requests)} file(s)) — waiting for results…")
+            logger.info("Batch %s submitted — polling every %ds for completion", batch.id, _POLL_INTERVAL)
+
+        if batch.processing_status != "ended":
+            max_polls = _max_polls()
+            for poll_num in range(max_polls):
+                await asyncio.sleep(_POLL_INTERVAL)
+                batch = await _client.messages.batches.retrieve(batch.id)
+                run.batch_status = batch.processing_status
+                # Heartbeat: prove the run is alive during the checkpoint-free poll phase
+                # so the staleness sweep doesn't reset a still-live batch (DEC-045).
+                run.last_heartbeat_at = datetime.now(timezone.utc)
+                await db.commit()
+                elapsed_min = (poll_num + 1) * _POLL_INTERVAL // 60
+                logger.debug("Batch %s status: %s (poll %d)", batch.id, batch.processing_status, poll_num + 1)
+                if batch.processing_status == "ended":
+                    break
+                if elapsed_min > 0:
+                    await _set_progress(f"AI processing… ({elapsed_min}m elapsed)")
+            else:
+                raise TimeoutError(
+                    f"Batch {batch.id} did not complete within {max_polls * _POLL_INTERVAL}s"
+                )
 
         await _set_progress("Processing AI results…")
-
-        run = await ingest_service.start_run(db, source_name)
-        await db.commit()
 
         results_stream = await _client.messages.batches.results(batch.id)
         async for result in results_stream:
@@ -265,58 +411,94 @@ async def batch_ingest_files(
                     error_message=error_msg,
                     raw_content=file_info["content"][:5000],
                 )
+                await ingest_service.mark_file_checkpoint(db, run.id, filename, "error", error_msg)
+                await db.commit()
                 continue
 
             if result.result.type != "succeeded":
+                await ingest_service.mark_file_checkpoint(
+                    db, run.id, filename, "error", f"batch result type: {result.result.type}"
+                )
+                await db.commit()
                 continue
 
-            message = result.result.message
-            response_text = message.content[0].text if message.content else ""
-            raw_rules, file_summary = _parse_llm_response(response_text)
+            # Per-file isolation: an unexpected error (parse, Cognee, service lookup, store)
+            # must not break out of the results stream and strand the remaining files. Mirror
+            # the sequential path — mark the file "error" in its own transaction and continue.
+            try:
+                message = result.result.message
+                response_text = next((b.text for b in message.content if b.type == "text"), "")
+                raw_rules, file_summary = _parse_llm_response(response_text)
 
-            extracted: list[ExtractedRule] = []
-            for r in raw_rules:
-                title = r.get("title", "").strip()
-                definition = r.get("definition", "").strip()
-                if not title or not definition:
-                    continue
-                confidence = max(0.0, min(1.0, float(r.get("confidence", 0.5))))
-                if confidence == 0.0:
-                    continue
-                extracted.append(ExtractedRule(title=title, definition=definition, confidence=confidence))
+                extracted: list[ExtractedRule] = []
+                for r in raw_rules:
+                    title = r.get("title", "").strip()
+                    definition = r.get("definition", "").strip()
+                    if not title or not definition:
+                        continue
+                    confidence = max(0.0, min(1.0, float(r.get("confidence", 0.5))))
+                    if confidence == 0.0:
+                        continue
+                    extracted.append(ExtractedRule(title=title, definition=definition, confidence=confidence))
 
-            logger.info("Parsed %d rules from '%s'", len(extracted), filename)
+                logger.info("Parsed %d rules from '%s'", len(extracted), filename)
 
-            cognee_node_id = await add_to_graph(file_info["content"], dataset_name="rulegraph", db=db)
+                cognee_node_id = await add_to_graph(file_info["content"], dataset_name="rulegraph", db=db)
 
-            module = derive_module_from_path(filename, source_name)
-            if module not in service_cache:
-                service_cache[module] = await ingest_service.get_or_create_service(db, module)
-                await db.commit()
-            file_service = service_cache[module]
+                module = derive_module_from_path(filename, source_name)
+                if module not in service_cache:
+                    service_cache[module] = await ingest_service.get_or_create_service(db, module)
+                    await db.commit()
+                file_service = service_cache[module]
 
-            if file_summary:
-                module_file_summaries.setdefault(module, []).append(file_summary)
+                if file_summary:
+                    module_file_summaries.setdefault(module, []).append(file_summary)
 
-            for rule in extracted:
-                try:
-                    await ingest_service.store_rule(
-                        db=db,
-                        title=rule.title,
-                        definition=rule.definition,
-                        confidence=rule.confidence,
-                        source_type="code",
-                        cognee_node_id=cognee_node_id,
-                        service_id=file_service.id,
-                        source_file=filename,
+                file_store_failed = False
+                for rule in extracted:
+                    try:
+                        await ingest_service.store_rule(
+                            db=db,
+                            title=rule.title,
+                            definition=rule.definition,
+                            confidence=rule.confidence,
+                            source_type="code",
+                            cognee_node_id=cognee_node_id,
+                            service_id=file_service.id,
+                            source_file=filename,
+                        )
+                        rules_extracted += 1
+                    except Exception as exc:
+                        logger.error("Failed to store rule '%s': %s", rule.title, exc)
+                        errors.append(str(exc))
+                        file_store_failed = True
+
+                # Only checkpoint "done" when the file's rules actually persisted (see the
+                # sequential path) so a Resume reprocesses any file whose stores failed.
+                if file_store_failed:
+                    files_errored += 1
+                    await ingest_service.mark_file_checkpoint(
+                        db, run.id, filename, "error", "one or more rules failed to store"
                     )
-                    rules_extracted += 1
-                except Exception as exc:
-                    logger.error("Failed to store rule '%s': %s", rule.title, exc)
-                    errors.append(str(exc))
+                else:
+                    files_processed += 1
+                    await ingest_service.mark_file_checkpoint(db, run.id, filename, "done")
+                await db.commit()
 
-            files_processed += 1
-            await db.commit()
+            except Exception as exc:
+                logger.error("Unexpected error processing batch result for '%s': %s", filename, exc)
+                errors.append(f"{filename}: {exc}")
+                files_errored += 1
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+                # Error checkpoint in its OWN transaction so it survives the rollback above.
+                try:
+                    await ingest_service.mark_file_checkpoint(db, run.id, filename, "error", str(exc))
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
 
     # Conflict detection once for the whole batch (more efficient than per-file)
     try:
@@ -365,18 +547,22 @@ async def batch_ingest_files(
     except Exception as e:
         logger.warning("Wiki generation failed for '%s' (non-fatal): %s", source_name, e)
 
+    # Derive the persisted run tallies from checkpoints (not the local pass counters):
+    # on a resume the counters start at 0 and count only this pass, so they'd
+    # under-report the cross-attempt totals. See DEC-045 / IV-001.
+    done_count, errored_count = await ingest_service.count_checkpoint_tallies(db, run.id)
     await ingest_service.complete_run(
         db, run.id,
-        status="completed" if not errors else "completed_with_errors",
-        files_processed=files_processed,
-        files_errored=files_errored,
+        status="completed" if errored_count == 0 else "completed_with_errors",
+        files_processed=done_count,
+        files_errored=errored_count,
         last_processed_file=last_file,
     )
     await db.commit()
 
     logger.info(
-        "Batch ingest complete for '%s': %d rules from %d files (%d errors)",
-        source_name, rules_extracted, files_processed, len(errors),
+        "Batch ingest complete for '%s': %d rules from %d files (%d errored, %d this pass)",
+        source_name, rules_extracted, done_count, errored_count, files_processed,
     )
     return {
         "rules_extracted": rules_extracted,

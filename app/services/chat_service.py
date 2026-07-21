@@ -9,17 +9,41 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+import anthropic
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.graph.cognee_client import recall_from_graph
+from app.ingest.extractor import _get_client
 from app.models.rule import Rule
 from app.schemas.notification import ChatSource, ChatResponse, ChatHistoryMessage, ChatHistoryResponse
 from app.security.rate_limit import get_redis
+from app.services.settings_service import (
+    get_simple_model,
+    get_litellm_base_url,
+    get_anthropic_api_key,
+    is_claude_enabled,
+    get_llm_request_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
 _SESSION_TTL = 86400  # 24 hours
+
+_CHAT_SYSTEM_PROMPT_BUSINESS = """\
+You are a business rules assistant. Answer using only the context provided.
+Explain in plain English what the rules mean for the business and its users.
+Do not include code, file paths, class names, or implementation details.
+If the context contains no relevant information, say clearly that no matching
+rules were found and suggest using the Rules browser for a detailed search.
+"""
+
+_CHAT_SYSTEM_PROMPT_TECHNICAL = """\
+You are a technical knowledge assistant. Answer using only the context provided.
+Be precise: include rule names, relevant implementation detail, and code locations
+when they appear in the context. If the context contains no relevant information,
+say clearly that no matching rules were found and suggest using the Rules browser.
+"""
 
 
 def _session_key(user_id: uuid.UUID, session_id: str) -> str:
@@ -62,10 +86,16 @@ def _extract_keywords(text: str) -> list[str]:
     return [w for w in words if w not in stop and len(w) > 2]
 
 
-async def _postgres_sources(db: AsyncSession, keywords: list[str], limit: int = 5) -> list[ChatSource]:
-    """Find rules matching any keyword via case-insensitive LIKE."""
+async def _postgres_sources(
+    db: AsyncSession, keywords: list[str], limit: int = 5
+) -> tuple[list[ChatSource], list[str]]:
+    """Find rules matching any keyword via case-insensitive LIKE.
+
+    Returns (sources_for_citation, context_snippets_for_llm). Both come from
+    the same query so there is no extra round-trip.
+    """
     if not keywords:
-        return []
+        return [], []
 
     conditions = []
     for kw in keywords[:5]:
@@ -76,54 +106,100 @@ async def _postgres_sources(db: AsyncSession, keywords: list[str], limit: int = 
     result = await db.execute(q)
     rules = result.scalars().all()
 
-    return [
-        ChatSource(type="rule", id=str(r.id), title=r.title)
-        for r in rules
-    ]
+    sources = [ChatSource(type="rule", id=str(r.id), title=r.title) for r in rules]
+    snippets = [f"Rule: {r.title}\n{r.definition}" for r in rules]
+    return sources, snippets
 
 
-def _format_response(cognee_results: list, sources: list[ChatSource], view: str, message: str) -> tuple[str, float]:
-    """Format the LLM/Cognee answer for the requested view. Returns (text, confidence)."""
-    # Try to extract text from Cognee results
-    answer_parts: list[str] = []
-    for item in cognee_results:
+def _fallback_answer(sources: list[ChatSource]) -> tuple[str, float]:
+    """Return a graceful string when LLM is disabled or errors."""
+    if sources:
+        titles = ", ".join(s.title for s in sources[:3])
+        return (
+            f"I found these relevant rules: {titles}. "
+            "The knowledge graph contains information about these topics, but I was unable to synthesise a full answer right now.",
+            0.60,
+        )
+    return (
+        "I could not find specific information about that topic in the knowledge graph. "
+        "Try rephrasing your question or use the Rules browser for a detailed search.",
+        0.30,
+    )
+
+
+async def _llm_answer(
+    db: AsyncSession,
+    cognee_results: list,
+    sources: list[ChatSource],
+    rule_snippets: list[str],
+    history: list[dict],
+    message: str,
+    view: str,
+) -> tuple[str, float]:
+    """Synthesise a real LLM answer from Cognee + Postgres context."""
+    # Confidence is a data-quality heuristic, not LLM self-reported certainty
+    if cognee_results:
+        confidence = 0.75
+    elif sources:
+        confidence = 0.60
+    else:
+        confidence = 0.40
+
+    # Build context block: Cognee graph results + full rule title+definition snippets
+    context_parts: list[str] = []
+    for item in cognee_results[:5]:
         if isinstance(item, str) and len(item) > 20:
-            answer_parts.append(item)
+            context_parts.append(item)
         elif isinstance(item, dict):
             for key in ("text", "content", "answer", "description", "definition"):
                 val = item.get(key, "")
                 if isinstance(val, str) and len(val) > 20:
-                    answer_parts.append(val)
+                    context_parts.append(val)
                     break
+    context_parts.extend(rule_snippets[:5])
+    context_block = "\n".join(context_parts) if context_parts else "(No matching rules found in knowledge graph)"
 
-    if answer_parts:
-        raw_answer = " ".join(answer_parts[:3])
-        confidence = 0.75
-    elif sources:
-        # Build a summary from Postgres results
-        titles = ", ".join(s.title for s in sources[:3])
-        raw_answer = (
-            f"Based on the knowledge graph, I found relevant business rules: {titles}. "
-            "These rules define the business behaviour you asked about."
+    system_prompt = _CHAT_SYSTEM_PROMPT_BUSINESS if view == "business" else _CHAT_SYSTEM_PROMPT_TECHNICAL
+
+    # Check LLM enabled before making any expensive settings reads
+    if not await is_claude_enabled(db):
+        logger.info("Claude API disabled by admin — returning fallback chat answer")
+        return _fallback_answer(sources)
+
+    try:
+        api_key = await get_anthropic_api_key(db)
+        base_url = await get_litellm_base_url(db)
+        model = await get_simple_model(db)
+        timeout = await get_llm_request_timeout(db)
+        # Commit read transaction before the potentially slow LLM call
+        # (avoids idle_in_transaction_session_timeout with slow local models like Gemma)
+        await db.commit()
+        client = _get_client(api_key, base_url=base_url, timeout=timeout)
+
+        # Build multi-turn conversation: history last 3 exchanges + current question with context
+        conversation_messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in history[-6:]
+        ]
+        conversation_messages.append({
+            "role": "user",
+            "content": f"Context from knowledge graph:\n{context_block}\n\nQuestion: {message}",
+        })
+
+        response = await client.messages.create(
+            model=model,
+            max_tokens=512,
+            system=system_prompt,
+            messages=conversation_messages,
         )
-        confidence = 0.60
-    else:
-        raw_answer = (
-            "I could not find specific information about that topic in the knowledge graph. "
-            "Try rephrasing your question or check the Rules browser for more detail."
-        )
-        confidence = 0.30
-
-    # Business view: strip any technical snippets (simple heuristic)
-    if view == "business":
-        lines = [ln for ln in raw_answer.splitlines() if not any(
-            sig in ln for sig in ["src/", ".cs", ".py", "class ", "namespace "]
-        )]
-        answer = " ".join(lines) if lines else raw_answer
-    else:
-        answer = raw_answer
-
-    return answer, confidence
+        text = next((b.text for b in response.content if b.type == "text"), "").strip()
+        if not text:
+            logger.warning("LLM returned empty content for chat message, using fallback")
+            return _fallback_answer(sources)
+        return text, confidence
+    except Exception as exc:
+        logger.warning("Chat LLM call failed, using fallback: %s", exc)
+        return _fallback_answer(sources)
 
 
 async def chat(
@@ -147,8 +223,8 @@ async def chat(
     # Query Cognee knowledge graph
     cognee_results = await recall_from_graph(context_query)
 
-    # Find Postgres sources for citation
-    sources = await _postgres_sources(db, keywords)
+    # Find Postgres sources for citation + full definition snippets for LLM context
+    sources, rule_snippets = await _postgres_sources(db, keywords)
 
     # Add Cognee-derived sources if they look like rule IDs
     for item in cognee_results:
@@ -160,7 +236,7 @@ async def chat(
                 if not already:
                     sources.append(ChatSource(type="rule", id=str(node_id), title=name))
 
-    answer, confidence = _format_response(cognee_results, sources, view, message)
+    answer, confidence = await _llm_answer(db, cognee_results, sources, rule_snippets, history, message, view)
 
     # Save updated session
     now = datetime.now(timezone.utc).isoformat()

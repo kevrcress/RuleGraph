@@ -24,6 +24,7 @@ import WikiBrowser from "./pages/wiki/WikiBrowser";
 import WikiEntry from "./pages/wiki/WikiEntry";
 import GraphPage from "./pages/graph/GraphPage";
 import Sources from "./pages/admin/Sources";
+import IngestFileStatus from "./pages/admin/IngestFileStatus";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -188,6 +189,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={["admin"]}>
                 <Sources />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/sources/:sourceId/ingest-status"
+            element={
+              <ProtectedRoute roles={["admin"]}>
+                <IngestFileStatus />
               </ProtectedRoute>
             }
           />

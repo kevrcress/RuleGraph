@@ -4,7 +4,7 @@ from app.models.rule import Rule, RuleVersion, Service, RuleService
 from app.models.document import Document, RuleDocument
 from app.models.notification import Subscription, Notification
 from app.models.audit import AuditLog
-from app.models.ingest import IngestError, IngestRun
+from app.models.ingest import IngestError, IngestRun, IngestFileCheckpoint
 from app.models.ingest_source import IngestSource
 from app.models.settings import SystemSetting
 from app.models.conflict import Conflict
@@ -26,6 +26,7 @@ __all__ = [
     "AuditLog",
     "IngestError",
     "IngestRun",
+    "IngestFileCheckpoint",
     "IngestSource",
     "SystemSetting",
     "Conflict",

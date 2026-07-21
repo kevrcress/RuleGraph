@@ -8,13 +8,76 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum
+from app.models.ingest import IngestRun, IngestError, IngestErrorSourceEnum, IngestFileCheckpoint
+from app.models.ingest_source import IngestSource
 from app.models.rule import Rule, RuleStatusEnum, Service, RuleService, RuleVersion
 
 logger = logging.getLogger(__name__)
+
+
+async def latest_run_for_source(db: AsyncSession, source_name: str) -> Optional[IngestRun]:
+    """Return a source's most recent IngestRun, or None.
+
+    Linkage is by ``source_name`` (ingest_runs has no source FK). "Latest" is
+    ``started_at DESC, id DESC`` — the ``id`` tiebreaker makes the result deterministic
+    when two runs share a started_at. Single source of truth for the recovery sweep, the
+    resume gate, and (matching the ordering) the batched list lookup. See IV-016.
+    """
+    return (await db.execute(
+        select(IngestRun)
+        .where(IngestRun.source_name == source_name)
+        .order_by(IngestRun.started_at.desc(), IngestRun.id.desc())
+        .limit(1)
+    )).scalars().first()
+
+
+def is_run_resumable(run_status: Optional[str], src_ingest_status: str) -> bool:
+    """Whether a run is incomplete enough to resume.
+
+    A run is "incomplete" when its status is still ``running``/``completed_with_errors``,
+    or when the source itself is in an ``error``/``ingesting`` state. Shared by the
+    server-side resume gate (``find_resumable_run``) and the status route's ``can_resume``
+    flag so the UI's enable-state and the server's accept/reject can never drift apart.
+    """
+    if run_status is None:
+        return False
+    return run_status in ("running", "completed_with_errors") or src_ingest_status in ("error", "ingesting")
+
+
+async def find_resumable_run(db: AsyncSession, src: IngestSource) -> Optional[IngestRun]:
+    """Return the source's latest IngestRun if it is resumable, else None."""
+    run = await latest_run_for_source(db, src.name)
+    if run is None:
+        return None
+    if is_run_resumable(run.status, src.ingest_status):
+        return run
+    return None
+
+
+async def reset_error_checkpoints_for_retry(db: AsyncSession, run: IngestRun) -> int:
+    """Reset all error checkpoints to pending and mark the run as running again.
+
+    Returns the count of checkpoints reset. Returns 0 if no error checkpoints exist
+    (caller should treat this as a 400 / no-op).
+
+    The caller MUST await db.commit() after this call and BEFORE enqueuing the arq job.
+    """
+    result = await db.execute(
+        sa_update(IngestFileCheckpoint)
+        .where(
+            IngestFileCheckpoint.ingest_run_id == run.id,
+            IngestFileCheckpoint.status == "error",
+        )
+        .values(status="pending")
+    )
+    count = result.rowcount
+    if count > 0:
+        run.status = "running"
+    return count
+
 
 # Retry configuration per error source
 RETRY_CONFIG = {
@@ -58,6 +121,76 @@ async def complete_run(
         if last_processed_file:
             run.last_processed_file = last_processed_file
         await db.flush()
+
+
+async def mark_file_checkpoint(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    file_path: str,
+    status: str,
+    error_message: Optional[str] = None,
+) -> IngestFileCheckpoint:
+    """Upsert a per-file checkpoint for an ingest run.
+
+    Keyed on (ingest_run_id, file_path). Sets processed_at=now() when status
+    is "done" or "error". Follows the select-then-insert/update pattern of store_rule.
+    """
+    result = await db.execute(
+        select(IngestFileCheckpoint)
+        .where(IngestFileCheckpoint.ingest_run_id == run_id)
+        .where(IngestFileCheckpoint.file_path == file_path)
+    )
+    checkpoint = result.scalar_one_or_none()
+
+    processed_at = datetime.now(timezone.utc) if status in ("done", "error") else None
+
+    if checkpoint is not None:
+        checkpoint.status = status
+        checkpoint.error_message = error_message
+        checkpoint.processed_at = processed_at
+        await db.flush()
+        return checkpoint
+
+    checkpoint = IngestFileCheckpoint(
+        id=uuid.uuid4(),
+        ingest_run_id=run_id,
+        file_path=file_path,
+        status=status,
+        error_message=error_message,
+        processed_at=processed_at,
+    )
+    db.add(checkpoint)
+    await db.flush()
+    return checkpoint
+
+
+async def get_done_files(db: AsyncSession, run_id: uuid.UUID) -> set[str]:
+    """Return the set of file paths already marked done for an ingest run."""
+    result = await db.execute(
+        select(IngestFileCheckpoint.file_path)
+        .where(IngestFileCheckpoint.ingest_run_id == run_id)
+        .where(IngestFileCheckpoint.status == "done")
+    )
+    return set(result.scalars().all())
+
+
+async def count_checkpoint_tallies(db: AsyncSession, run_id: uuid.UUID) -> tuple[int, int]:
+    """Return ``(done_count, error_count)`` from a run's checkpoints in one query.
+
+    The persisted ``IngestRun.files_processed``/``files_errored`` are derived from this
+    so a run completed across a crash + resume reports the cross-attempt totals, not just
+    the final pass's local counters (the resume pass starts both counters at 0). Used by
+    both the normal completion path and ``_finalize_empty_resume``. See DEC-045 / IV-001.
+    """
+    from sqlalchemy import func
+
+    rows = (await db.execute(
+        select(IngestFileCheckpoint.status, func.count())
+        .where(IngestFileCheckpoint.ingest_run_id == run_id)
+        .group_by(IngestFileCheckpoint.status)
+    )).all()
+    by_status = {status: count for status, count in rows}
+    return by_status.get("done", 0), by_status.get("error", 0)
 
 
 async def log_error(

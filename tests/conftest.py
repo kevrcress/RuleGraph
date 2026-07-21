@@ -102,6 +102,11 @@ async def client(test_engine):
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    # ASGITransport does NOT run FastAPI startup events, so app.state.arq_pool is
+    # never created here. Provide a mock pool so ingest routes can enqueue jobs
+    # without a live Redis worker. Tests that assert on enqueue patch this mock.
+    from unittest.mock import AsyncMock
+    app.state.arq_pool = AsyncMock()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test"

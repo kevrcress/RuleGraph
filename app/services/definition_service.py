@@ -64,7 +64,7 @@ async def infer_definition(
         messages=[{"role": "user", "content": user_msg}],
     )
 
-    text = response.content[0].text.strip() if response.content else "{}"
+    text = next((b.text for b in response.content if b.type == "text"), "{}").strip()
     # Strip any accidental markdown fences
     text = re.sub(r"^```[a-z]*\n?", "", text)
     text = re.sub(r"\n?```$", "", text)

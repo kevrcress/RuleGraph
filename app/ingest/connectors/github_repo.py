@@ -53,6 +53,7 @@ class GitHubRepoConnector:
         exclude: Optional[list[str]] = None,
         test_paths: Optional[list[str]] = None,
         last_commit_sha: Optional[str] = None,
+        skip_paths: Optional[set[str]] = None,
     ):
         self.repo_url = repo_url
         self.pat = pat
@@ -61,6 +62,10 @@ class GitHubRepoConnector:
         self.exclude = exclude or []
         self.test_paths = test_paths or []
         self.last_commit_sha = last_commit_sha
+        # Relative paths to skip reading entirely (already-done files on a Resume).
+        # Skipping the read avoids materializing their content into memory only to
+        # filter them out downstream. See DEC-045 follow-up.
+        self.skip_paths = skip_paths or set()
 
     def _auth_url(self) -> str:
         url = self.repo_url
@@ -155,6 +160,10 @@ class GitHubRepoConnector:
             rel = str(file_path.relative_to(root))
 
             if allowed_paths is not None and rel not in allowed_paths:
+                continue
+            # Resume: already-done files are filtered out downstream regardless, so
+            # skip the read here to avoid loading their content into memory (DEC-045).
+            if rel in self.skip_paths:
                 continue
             if self._is_excluded(rel, file_path.name):
                 continue

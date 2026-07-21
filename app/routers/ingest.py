@@ -7,7 +7,7 @@ POST /ingest/migrate
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException, Query
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -61,17 +61,16 @@ async def ingest_file(
 
 @router.post("")
 async def ingest_all_sources(
-    background_tasks: BackgroundTasks,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(require_roles("admin")),
 ):
     """
     Trigger ingest for all active sources configured via /admin/sources.
-    Each source runs as a background task. Use GET /admin/sources to check last_ingested_at.
+    Each source is enqueued as an arq job. Use GET /admin/sources to check last_ingested_at.
     """
     from sqlalchemy import select
     from app.models.ingest_source import IngestSource
-    from app.routers.sources import _run_source_ingest
 
     result = await db.execute(select(IngestSource).where(IngestSource.status == "active"))
     sources = result.scalars().all()
@@ -83,8 +82,14 @@ async def ingest_all_sources(
             "sources_triggered": 0,
         }
 
+    from app.tasks.queue import INGEST_QUEUE_NAME
+    from app.routers._deps import require_arq_pool
+
+    pool = require_arq_pool(request)
     for src in sources:
-        background_tasks.add_task(_run_source_ingest, str(src.id))
+        await pool.enqueue_job(
+            "run_source_ingest", str(src.id), False, _queue_name=INGEST_QUEUE_NAME
+        )
 
     return {
         "status": "started",

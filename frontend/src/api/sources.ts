@@ -18,6 +18,11 @@ export interface IngestSource {
   ingest_error: string | null;
   ingest_progress: string | null;
   last_commit_sha: string | null;
+  run_status: string | null;
+  done_file_count: number;
+  total_file_count: number;
+  run_is_stale: boolean;
+  can_resume: boolean;
 }
 
 export interface CreateSourcePayload {
@@ -104,10 +109,24 @@ export const useTriggerIngest = () => {
   return useMutation({
     mutationFn: async (sourceId: string) => {
       const res = await apiClient.post(`/admin/sources/${sourceId}/ingest`);
-      return res.data as { status: string; source_name: string; message: string };
+      return res.data as { status: string; source_name: string; message: string; run_id?: string };
     },
     onSuccess: () => {
       // Invalidate sources so last_ingested_at refreshes
+      qc.invalidateQueries({ queryKey: ["sources"] });
+    },
+  });
+};
+
+export const useResumeSource = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (sourceId: string) => {
+      const res = await apiClient.post(`/admin/sources/${sourceId}/resume`);
+      return res.data as { status: string; source_name: string; message: string; run_id?: string };
+    },
+    onSuccess: () => {
+      // Invalidate sources so progress fields refresh
       qc.invalidateQueries({ queryKey: ["sources"] });
     },
   });

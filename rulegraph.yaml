@@ -26,6 +26,19 @@ llm:
   simple_model: claude-haiku-4-5
   complex_model: claude-sonnet-4-5
   complexity_threshold: 0.5
+  llm_request_timeout_seconds: 300
+
+worker:
+  # Max wall-clock seconds an arq ingest job may run before arq kills it.
+  ingest_job_timeout_seconds: 7200
+  # Extra grace (seconds) added to the timeout before a stalled ingest run is
+  # declared stale and auto-recovered to "error".
+  ingest_stale_grace_seconds: 600
+  # Seconds reserved below the job timeout for clone + complexity scoring +
+  # results streaming. The Batch poll budget = job_timeout − this reserve, kept
+  # strictly under job_timeout so the poll loop self-times-out before arq kills
+  # the worker. Invariant: poll_budget < job_timeout < (job_timeout + grace). DEC-045.
+  ingest_batch_poll_reserve_seconds: 900
 
 pagination:
   default_limit: 50

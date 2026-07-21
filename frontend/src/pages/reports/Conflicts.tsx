@@ -3,7 +3,6 @@ import { useConflicts } from "../../api/admin";
 import { useDriftRules } from "../../api/rules";
 import { useSubscriptions, useSubscribe, useUnsubscribe } from "../../api/chat";
 import Layout from "../../components/Layout";
-import RuleDiff from "../../components/RuleDiff";
 
 const SEV_CONFIG = {
   high:   { fg: "var(--danger)", bg: "var(--danger-soft)", label: "High" },

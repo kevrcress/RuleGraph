@@ -161,6 +161,26 @@ uvicorn app.main:app --reload
 API available at **http://localhost:8000**  
 Interactive docs at **http://localhost:8000/docs**
 
+### 5b. Start the ingest worker
+
+Source ingest runs in a separate **arq** worker process so jobs survive a backend
+restart. Start it alongside the backend (same env / `.env`):
+
+```bash
+arq app.tasks.worker.WorkerSettings
+```
+
+Triggering an ingest (`POST /admin/sources/{id}/ingest` or `/resume`) enqueues a
+job onto Redis; the worker picks it up and runs it. If the worker is not running,
+jobs queue in Redis until it starts.
+
+> **⚠️ The worker is required, not optional.** `docker compose up` does **not** start
+> it. Without a running worker: (1) every ingest sits queued in Redis and never runs,
+> and (2) the staleness auto-recovery sweep — an arq cron that lives only in the worker
+> — never fires, so a source left mid-ingest by a crash stays stuck at
+> `ingest_status="ingesting"` until a worker is started. Run it as a managed process
+> (e.g. a systemd unit or a `command:` override on the commented `worker` compose service).
+
 ### 6. Start the frontend
 
 ```bash
@@ -322,6 +342,19 @@ GET /admin/users / POST / PUT
 GET /admin/ingest-errors
 GET /admin/settings / PUT
 GET /admin/synonyms / approve / reject
+```
+
+**Sources (Admin)** — configure repos and drive ingest. List responses carry per-source
+run progress: `run_status`, `done_file_count`/`total_file_count`, `run_is_stale`, and
+`can_resume` (server-authoritative — the UI enables Resume from this flag).
+```
+GET    /admin/sources                 — list sources + latest-run progress
+POST   /admin/sources                 — add a source
+PUT    /admin/sources/{id}            — update a source
+DELETE /admin/sources/{id}            — remove a source
+POST   /admin/sources/{id}/ingest     — enqueue a fresh ingest (arq worker)
+POST   /admin/sources/{id}/resume     — resume the latest incomplete run, skipping done files
+GET    /admin/ingest-runs/{id}        — run detail
 ```
 
 ---

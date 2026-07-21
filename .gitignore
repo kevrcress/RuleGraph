@@ -2,6 +2,11 @@
 .env.local
 .env.*.local
 
+# Credential / key material
+*.pem
+*.key
+*.p12
+
 __pycache__/
 *.pyc
 *.pyo

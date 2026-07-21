@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import Layout from "../../components/Layout";
-import { useSources, useCreateSource, useUpdateSource, useDeleteSource, useTriggerIngest, type IngestSource } from "../../api/sources";
+import { useSources, useCreateSource, useUpdateSource, useDeleteSource, useTriggerIngest, useResumeSource, type IngestSource } from "../../api/sources";
 
 const BLANK = { name: "", repo_url: "", branch: "main", pat: "", paths: "", test_paths: "" };
 
@@ -36,6 +36,12 @@ function IngestStatusBadge({ source }: { source: IngestSource }) {
             {source.ingest_progress}
           </div>
         )}
+        <Link
+          to={`/admin/sources/${source.id}/ingest-status`}
+          style={{ fontSize: 11, color: "var(--accent)", marginTop: 4, display: "inline-block" }}
+        >
+          View file status →
+        </Link>
       </div>
     );
   }
@@ -50,23 +56,55 @@ function IngestStatusBadge({ source }: { source: IngestSource }) {
             {source.ingest_error}
           </div>
         )}
+        <Link
+          to={`/admin/sources/${source.id}/ingest-status`}
+          style={{ fontSize: 11, color: "var(--accent)", marginTop: 4, display: "inline-block" }}
+        >
+          View file status →
+        </Link>
       </div>
     );
   }
   return (
-    <span style={{ fontSize: 12, padding: "2px 9px", borderRadius: 999, background: source.status === "active" ? "var(--ok-soft)" : "var(--panel2)", color: source.status === "active" ? "var(--ok)" : "var(--ink3)", fontWeight: 500 }}>
-      {source.status}
-    </span>
+    <div>
+      <span style={{ fontSize: 12, padding: "2px 9px", borderRadius: 999, background: source.status === "active" ? "var(--ok-soft)" : "var(--panel2)", color: source.status === "active" ? "var(--ok)" : "var(--ink3)", fontWeight: 500 }}>
+        {source.status}
+      </span>
+      {source.done_file_count > 0 && (
+        <Link
+          to={`/admin/sources/${source.id}/ingest-status`}
+          style={{ fontSize: 11, color: "var(--accent)", marginTop: 4, display: "block" }}
+        >
+          View file status →
+        </Link>
+      )}
+    </div>
   );
 }
 
-function SourceRow({ source, onIngest, onDelete, onSaved }: { source: IngestSource; onIngest: (id: string) => void; onDelete: (id: string) => void; onSaved: () => void }) {
+// Resumability is decided server-side (`can_resume`, computed from the same
+// `is_run_resumable` predicate the resume endpoint gates on) so the button's
+// visibility can never drift from what the server will actually accept.
+function canResume(source: IngestSource): boolean {
+  return source.can_resume;
+}
+
+// Resume stays disabled during a healthy in-flight run (no double-enqueue), but
+// enables the moment the run is detectably stale — without waiting for the cron
+// sweep to flip the source to "error".
+function isResumeEnabled(source: IngestSource): boolean {
+  return canResume(source) && (source.ingest_status !== "ingesting" || source.run_is_stale);
+}
+
+function SourceRow({ source, onIngest, onResume, onDelete, onSaved }: { source: IngestSource; onIngest: (id: string) => void; onResume: (id: string) => void; onDelete: (id: string) => void; onSaved: () => void }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ name: source.name, branch: source.branch, repo_url: source.repo_url, paths: (source.paths ?? []).join(", "), test_paths: (source.test_paths ?? []).join(", "), pat: "" });
   const [editError, setEditError] = useState<string | null>(null);
   const updateSource = useUpdateSource();
   const isIngesting = source.ingest_status === "ingesting";
+  const showResume = canResume(source);
+  const resumeEnabled = isResumeEnabled(source);
 
   const openEdit = () => {
     setEditForm({ name: source.name, branch: source.branch, repo_url: source.repo_url, paths: (source.paths ?? []).join(", "), test_paths: (source.test_paths ?? []).join(", "), pat: "" });
@@ -123,6 +161,16 @@ function SourceRow({ source, onIngest, onDelete, onSaved }: { source: IngestSour
             >
               {isIngesting ? "Running…" : "Ingest Now"}
             </button>
+            {showResume && (
+              <button
+                onClick={() => onResume(source.id)}
+                disabled={!resumeEnabled}
+                title={`${source.done_file_count} of ${source.total_file_count} files done`}
+                style={{ padding: "6px 14px", border: "1px solid var(--accent)", borderRadius: 999, background: "var(--accent-soft, #e8f0fe)", color: "var(--accent)", fontSize: 12, fontWeight: 600, cursor: !resumeEnabled ? "not-allowed" : "pointer", fontFamily: "var(--font-sans)", opacity: !resumeEnabled ? 0.6 : 1, whiteSpace: "nowrap" }}
+              >
+                Resume
+              </button>
+            )}
             <button
               onClick={openEdit}
               style={{ padding: "6px 14px", border: "1px solid var(--line)", borderRadius: 999, background: editing ? "var(--panel2)" : "var(--panel)", color: "var(--ink2)", fontSize: 12, cursor: "pointer", fontFamily: "var(--font-sans)" }}
@@ -201,6 +249,7 @@ export default function Sources() {
   const createSource = useCreateSource();
   const deleteSource = useDeleteSource();
   const triggerIngest = useTriggerIngest();
+  const resumeSource = useResumeSource();
   // useUpdateSource is called per-row inside SourceRow
 
   const [showForm, setShowForm] = useState(false);
@@ -228,6 +277,14 @@ export default function Sources() {
     triggerIngest.mutate(id, {
       onSuccess: (data) => { setIngestMessage(data.message); refetch(); },
       onError: (err: any) => setIngestMessage(err?.response?.data?.detail ?? "Ingest trigger failed."),
+    });
+  };
+
+  const handleResume = (id: string) => {
+    setIngestMessage(null);
+    resumeSource.mutate(id, {
+      onSuccess: (data) => { setIngestMessage(data.message); refetch(); },
+      onError: (err: any) => setIngestMessage(err?.response?.data?.detail ?? "Resume failed."),
     });
   };
 
@@ -325,7 +382,7 @@ export default function Sources() {
             </thead>
             <tbody>
               {sources.map((src) => (
-                <SourceRow key={src.id} source={src} onIngest={handleIngest} onDelete={(id) => deleteSource.mutate(id)} onSaved={refetch} />
+                <SourceRow key={src.id} source={src} onIngest={handleIngest} onResume={handleResume} onDelete={(id) => deleteSource.mutate(id)} onSaved={refetch} />
               ))}
             </tbody>
           </table>
