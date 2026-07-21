@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only needs to read the checked-out code.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rulegraph
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # tests/conftest.py derives TEST_DATABASE_URL by replacing "/rulegraph"
+      # with "/rulegraph_test", so this must point at a db named "rulegraph".
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/rulegraph
+      REDIS_URL: redis://localhost:6379
+      # Throwaway CI values — NOT real secrets. Every LLM call in the suite is
+      # mocked (extract_rules / messages.create are patched), so no test makes a
+      # live Anthropic request; this key exists only to satisfy config loading.
+      ANTHROPIC_API_KEY: sk-ant-api03-ci-dummy-not-used-tests-mock-all-calls
+      # Valid throwaway Fernet key (app.security.encryption builds Fernet from it).
+      RULEGRAPH_ENCRYPTION_KEY: kkPZmzGOFl6B3k0An5agXfIyWagPn2C1G79iFje9JEY=
+      JWT_SECRET_KEY: 39ccfa383e4117c2bc36cc81b7218a52c7c7c0c046f529f38d143af7470db1a4
+      WEBHOOK_TEST_SECRET: a19e829b93e6f8221ce2bd1efa26d7fff35a2da5cd6be55dfbabc8a753041711
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # cognee 0.1.15 pins older anthropic/fastapi/sqlalchemy/uvicorn than the
+          # app requires, so a single `pip install -r requirements.txt` is
+          # unresolvable. Install cognee first, then the rest (minus cognee) which
+          # upgrades those shared packages to the versions the app actually uses.
+          # cognee's stale pins become warnings, not errors — the same coexistence
+          # the app runs with. Cognee failures are silent by design (DEC-001).
+          pip install "cognee==0.1.15"
+          grep -v '^cognee==' requirements.txt > requirements.ci.txt
+          pip install -r requirements.ci.txt
+
+      - name: Create test database
+        run: PGPASSWORD=postgres psql -h localhost -U postgres -c 'CREATE DATABASE rulegraph_test;'
+
+      - name: Run test suite
+        # Only unit + integration run in CI. tests/verify_stage_*.py are E2E
+        # scripts that need live uvicorn + Vite servers (and Playwright browsers),
+        # so they are excluded here. The Playwright `browser` fixture is
+        # session-scoped but lazy: nothing in unit/integration requests it, so no
+        # browser binary is launched and `playwright install` is not needed.
+        run: pytest tests/unit tests/integration -v
+
+  frontend:
+    name: Frontend build (typecheck + vite)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        # `npm run build` is `tsc -b && vite build` — typecheck then production build.
+        run: npm run build

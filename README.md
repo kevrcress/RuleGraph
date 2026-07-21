@@ -1,5 +1,7 @@
 # RuleGraph
 
+[![CI](https://github.com/kevrcress/RuleGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/kevrcress/RuleGraph/actions/workflows/ci.yml)
+
 An AI-powered knowledge graph that extracts business rules from source code and documents, connects them across service boundaries, and becomes the single source of truth for how your organization's software actually behaves — in plain English.
 
 ---
