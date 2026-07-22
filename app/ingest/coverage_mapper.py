@@ -1,12 +1,10 @@
 """
 Coverage mapper — maps test files to business rules and sets coverage_status.
 
-Coverage statuses:
-  covered      — tests exist covering all known permutations
-  partial      — some permutations tested but not all
-  uncovered    — no tests found anywhere
-  coverage_gap — tested in one service but not another that implements it
-  stale        — tests exist but rule changed after last test update
+Coverage statuses returned by map_coverage():
+  covered    — two or more test files overlap with the rule
+  partial    — exactly one test file overlaps with the rule
+  uncovered  — no test files overlap with the rule (or none supplied)
 """
 import logging
 import re

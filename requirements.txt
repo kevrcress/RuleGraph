@@ -41,5 +41,9 @@ structlog==24.4.0
 
 # Testing
 pytest==8.3.2
-pytest-asyncio==0.23.8
+# 0.26+ is required to honor the loop-scope options in pytest.ini
+# (asyncio_default_fixture_loop_scope / asyncio_default_test_loop_scope);
+# older releases ignore them and the session-scoped DB fixtures fail with
+# "attached to a different loop".
+pytest-asyncio==0.26.0
 pytest-playwright==0.5.1

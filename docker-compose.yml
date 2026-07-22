@@ -9,28 +9,55 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # ── arq ingest worker ─────────────────────────────────────────────────────
+  # ── FastAPI backend ────────────────────────────────────────────────────────
+  # Runs Alembic migrations, then serves the API on :8000.
+  backend:
+    build: .
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    env_file: .env
+    # Inside the compose network the DB/Redis hosts are the service names, not
+    # localhost — override whatever .env points at for host runs.
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/rulegraph
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── arq ingest worker ──────────────────────────────────────────────────────
   # Runs source ingest jobs out-of-process so they survive a uvicorn restart.
-  # The backend is not yet containerized (no Dockerfile), so this service is
-  # commented out. Run the worker locally instead:
-  #
-  #     arq app.tasks.worker.WorkerSettings
-  #
-  # Once a backend image exists, uncomment and point `build`/`image` at it:
-  #
-  # worker:
-  #   build: .
-  #   command: arq app.tasks.worker.WorkerSettings
-  #   env_file: .env
-  #   depends_on:
-  #     - redis
-  #     - postgres
+  worker:
+    build: .
+    command: arq app.tasks.worker.WorkerSettings
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/rulegraph
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres_data:

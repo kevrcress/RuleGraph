@@ -36,8 +36,10 @@ cd RuleGraph
 python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 3. Install Python dependencies
-pip install -r requirements.txt
+# 3. Install Python dependencies — two steps, see note below
+pip install "cognee==0.1.15"
+grep -v '^cognee==' requirements.txt > requirements-app.txt
+pip install -r requirements-app.txt
 
 # 4. Copy the example env file and fill in values
 cp .env.example .env
@@ -63,6 +65,13 @@ uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
 # UI at http://localhost:5173
 ```
+
+**Why step 3 is split:** `cognee==0.1.15` pins `anthropic<0.27.0` (plus older
+`fastapi`, `sqlalchemy`, and `uvicorn`) while the app requires `anthropic==0.34.2`,
+so a single `pip install -r requirements.txt` fails with `ResolutionImpossible`.
+Installing cognee first and the rest second upgrades those shared packages to the
+versions the app needs. Pip then prints a warning that cognee's pins are unmet —
+expected and safe; it still exits 0. CI and the Dockerfile install identically.
 
 **Demo login credentials** (seeded by `seed_fixtures.py`):
 

@@ -1,0 +1,24 @@
+# Keep the build context small and avoid baking host-only artifacts into the image.
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+*.pyc
+.pytest_cache
+.env
+.env.*
+*.log
+dump.rdb
+
+# Frontend build artifacts / deps (the backend image does not serve the SPA)
+frontend/node_modules
+frontend/dist
+
+# Local tooling and internal planning
+.claude
+.claude-hve-tracking
+my_skills
+design
+screenshots
