@@ -144,9 +144,32 @@ docker compose exec postgres createdb -U postgres rulegraph_test
 
 ### 3. Install Python dependencies
 
+Install in two steps — a single `pip install -r requirements.txt` fails with
+`ResolutionImpossible`, because `cognee==0.1.15` pins `anthropic<0.27.0` while the
+app requires `anthropic==0.34.2` (it also pins older `fastapi`, `sqlalchemy`, and
+`uvicorn`).
+
 ```bash
-pip install -r requirements.txt
+# 1. cognee first, with its own older pins
+pip install "cognee==0.1.15"
+
+# 2. everything else, which upgrades the shared packages to the versions the app needs
+grep -v '^cognee==' requirements.txt > requirements-app.txt
+pip install -r requirements-app.txt
 ```
+
+On Windows PowerShell, substitute step 2's first line:
+
+```powershell
+Select-String -NotMatch '^cognee==' requirements.txt | ForEach-Object { $_.Line } > requirements-app.txt
+```
+
+Step 2 ends with a `pip` message reporting that cognee's pins are no longer
+satisfied. That is expected and safe to ignore — pip still exits 0 and reports
+`Successfully installed`. RuleGraph deliberately runs cognee alongside newer
+shared packages; the graph layer is best-effort and its failures are contained by
+design (see `DECISIONS.md`, DEC-001). CI and the Dockerfile install the exact same
+way.
 
 ### 4. Run database migrations
 
